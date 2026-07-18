@@ -1,0 +1,1368 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="入札にゃん">
+<link rel="apple-touch-icon" href="<?!= iconUrl ?>">
+<link rel="icon" href="<?!= iconUrl ?>">
+<!--
+  ============================================================
+  入札にゃんOS Webアプリ v0.9.0（OCR正式登録統合）
+  ファイル名：webapp-index.html
+  ------------------------------------------------------------
+  ・1枚のHTML内でビューを切り替えるSPA風構成
+      #view-list    案件一覧
+      #view-detail  案件詳細（見積書生成ボタン）
+      #view-done    生成完了（PDFリンク）
+      #view-extract 資料でチェック（Phase1で追加。PDFアップロード
+                     →3項目確認→「詳細を抽出する」/「キャンセル」）
+  ・サーバー呼び出しは google.script.run 経由で api_* 関数のみ
+  ・APIの返却は必ず {success, data, error}（Ver3 Web共通契約）
+  ・Phase1で追加した4箇所には「Phase1 追加」とコメントを付けてある
+  ============================================================
+-->
+<style>
+  :root {
+    --paper: #FAF7F5;      /* 背景：ほんのりモーヴがかった紙色 */
+    --ink: #241E22;        /* 文字：ダークプラム */
+    --ink-soft: #7A6B74;   /* 補助文字 */
+    --line: #E9DEE4;       /* 罫線 */
+    --card: #FFFFFF;
+    --mauve: #A6688E;      /* メイン：モーヴ */
+    --mauve-deep: #7C4B69; /* 濃いモーヴ（縁取り・影） */
+    --mauve-pale: #F2E4EC; /* 淡いモーヴ（タップ時など） */
+    --plum: #3A2531;       /* ヘッダー背景：ダークプラム */
+    --ok: #2E7D46;
+    --err: #B3372B;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: var(--paper); color: var(--ink);
+    font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic", "Noto Sans JP", sans-serif;
+    font-size: 16px; line-height: 1.55; }
+
+  /* ── ヘッダー：モーヴ×プラムがブランドの署名 ── */
+  header {
+    background: var(--plum); color: #fff;
+    padding: 14px 16px 12px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  header .bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  header h1 { display: flex; align-items: center; font-size: 18px; margin: 0; font-weight: 700; letter-spacing: .04em; }
+  header h1 .brand-icon { margin-right: 8px; color: var(--mauve); flex-shrink: 0; }
+  .swallowtail-stripe {
+    height: 6px; margin-top: 10px; border-radius: 3px;
+    background: repeating-linear-gradient(
+      -45deg,
+      var(--mauve) 0 14px,
+      var(--plum) 14px 24px
+    );
+  }
+  .btn-refresh {
+    background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.4);
+    border-radius: 10px; padding: 8px 12px; font-size: 14px;
+  }
+  .btn-refresh:active { background: rgba(255,255,255,.15); }
+
+  main { padding: 16px; max-width: 640px; margin: 0 auto; }
+
+  /* ── ビュー切り替え ── */
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* ── 案件一覧 ── */
+  .list-meta { color: var(--ink-soft); font-size: 13px; margin: 2px 2px 10px; }
+  .case-card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 14px 12px; margin-bottom: 10px; cursor: pointer;
+    box-shadow: 0 1px 2px rgba(58,37,49,.06);
+    position: relative; overflow: hidden; --status-color: #B8ADB3;
+  }
+  .case-card::before {
+    content: ""; position: absolute; top: 0; bottom: 0; left: 0;
+    width: 5px; background: var(--status-color);
+  }
+  .case-card:active { background: var(--mauve-pale); }
+  .status-considering { --status-color: #C99A16; }
+  .status-estimating { --status-color: #C66A2B; }
+  .status-bid { --status-color: #3973B7; }
+  .status-won { --status-color: #2F855A; }
+  .status-lost { --status-color: #C54A42; }
+  .status-skipped { --status-color: #8A8588; }
+  .status-delivered { --status-color: #7A5AA6; }
+  .status-invoiced { --status-color: #8A5A3B; }
+  .case-card.status-won { background: #F2F9F4; box-shadow: 0 2px 8px rgba(47,133,90,.14); }
+  .case-card.status-lost { background: #FFF4F2; color: #755B58; }
+  .case-card.status-skipped { background: #F7F5F6; color: #8B8287; }
+  .case-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+  .pill-id {
+    font-size: 12px; font-weight: 700; letter-spacing: .03em;
+    background: var(--plum); color: var(--mauve-pale);
+    border-radius: 999px; padding: 2px 10px;
+  }
+  .pill-pdf {
+    font-size: 11px; font-weight: 700; color: var(--ok);
+    border: 1px solid var(--ok); border-radius: 999px; padding: 1px 8px;
+  }
+  .pill-status {
+    font-size: 11px; font-weight: 700; color: var(--status-color);
+    border: 1px solid var(--status-color); border-radius: 999px; padding: 1px 8px;
+  }
+  .case-actions {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+  }
+  .btn-status {
+    min-height: 42px; border: 1px solid var(--line); border-radius: 10px;
+    background: #fff; color: var(--ink); font: inherit; font-size: 12px; font-weight: 700;
+    padding: 7px 3px; cursor: pointer;
+  }
+  .btn-status:active { background: var(--mauve-pale); }
+  .btn-status[disabled] { opacity: .45; cursor: default; }
+  .next-action {
+    margin-top: 12px; padding: 11px 12px; border-radius: 11px;
+    background: #EDF5FC; border: 1px solid #C8DDEE;
+  }
+  .next-action.action-urgent, .next-action.action-today {
+    background: #FFF0EE; border-color: #E8B3AD; color: #9E3028;
+  }
+  .next-action.action-tomorrow {
+    background: #FFF5E9; border-color: #E7C69F; color: #9B591F;
+  }
+  .next-action.action-overdue {
+    background: #F5F2F3; border-color: #D8CFD3; color: #786C72;
+  }
+  .next-action-title { font-size: 14px; font-weight: 800; }
+  .next-action-row {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    gap: 10px; margin-top: 5px;
+  }
+  .next-action-deadline { min-width: 0; font-size: 12px; color: inherit; }
+  .next-action-deadline strong { display: block; font-size: 15px; }
+  .btn-next-action {
+    flex-shrink: 0; min-height: 40px; border: none; border-radius: 9px;
+    background: #3973B7; color: #fff; font: inherit; font-size: 12px;
+    font-weight: 800; padding: 8px 11px;
+  }
+  .btn-next-action[disabled] { opacity: .45; }
+  .case-name { font-size: 16px; font-weight: 700; margin: 0 0 4px; }
+  .case-sub { font-size: 13px; color: var(--ink-soft); display: flex; gap: 12px; flex-wrap: wrap; }
+
+  .empty, .list-error {
+    text-align: center; color: var(--ink-soft); padding: 40px 10px; font-size: 14px;
+  }
+  .list-error { color: var(--err); }
+
+  /* ── 案件詳細 ── */
+  .back-link {
+    display: inline-block; margin-bottom: 12px; color: var(--ink-soft);
+    font-size: 14px; text-decoration: none; padding: 6px 4px;
+  }
+  .detail-card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 18px 16px; margin-bottom: 16px;
+  }
+  .detail-card h2 { font-size: 18px; margin: 0 0 4px; }
+  .detail-org { color: var(--ink-soft); font-size: 14px; margin-bottom: 14px; }
+  dl.fields { margin: 0; }
+  dl.fields > div {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 10px 2px; border-top: 1px solid var(--line); font-size: 14px;
+  }
+  dl.fields dt { color: var(--ink-soft); flex-shrink: 0; }
+  dl.fields dd { margin: 0; text-align: right; word-break: break-all; }
+  dd a { color: var(--mauve-deep); font-weight: 700; }
+
+  /* ── ボタン ── */
+  .btn-primary {
+    display: block; width: 100%; border: none; border-radius: var(--radius);
+    background: var(--mauve); color: #fff;
+    font-size: 17px; font-weight: 700; padding: 16px; letter-spacing: .04em;
+    box-shadow: 0 2px 0 var(--mauve-deep);
+  }
+  .btn-primary:active { transform: translateY(1px); box-shadow: 0 1px 0 var(--mauve-deep); }
+  .btn-primary[disabled] { opacity: .5; }
+  .btn-secondary {
+    display: block; width: 100%; text-align: center; border-radius: var(--radius);
+    border: 1.5px solid var(--plum); color: var(--plum); background: transparent;
+    font-size: 15px; font-weight: 700; padding: 13px; margin-top: 10px;
+    text-decoration: none;
+  }
+  .hint { font-size: 12px; color: var(--ink-soft); margin-top: 10px; text-align: center; }
+
+  /* ── 完了ビュー ── */
+  .done-card {
+    background: var(--card); border: 1.5px solid var(--ok); border-radius: var(--radius);
+    padding: 24px 16px; text-align: center;
+  }
+  .done-card .mark { font-size: 40px; }
+  .done-card h2 { font-size: 18px; margin: 8px 0 4px; }
+  .done-card p { font-size: 14px; color: var(--ink-soft); margin: 0 0 16px; }
+
+  /* ── エラーバナー ── */
+  .error-banner {
+    display: none; background: #FBEBE8; border: 1px solid var(--err); color: var(--err);
+    border-radius: var(--radius); padding: 12px 14px; font-size: 14px; margin-bottom: 14px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .error-banner.show { display: block; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: calc(22px + env(safe-area-inset-bottom)); z-index: 30;
+    transform: translate(-50%, 12px); max-width: calc(100% - 32px);
+    background: var(--plum); color: #fff; border-radius: 999px;
+    padding: 10px 16px; font-size: 13px; font-weight: 700; text-align: center; white-space: pre-line;
+    opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  .confirm-modal {
+    display: none; position: fixed; inset: 0; z-index: 40;
+    align-items: center; justify-content: center; padding: 20px;
+    background: rgba(36,30,34,.48);
+  }
+  .confirm-modal.show { display: flex; }
+  .confirm-dialog {
+    width: 100%; max-width: 360px; background: var(--card); border-radius: var(--radius);
+    padding: 20px 18px 16px; box-shadow: 0 12px 36px rgba(36,30,34,.24);
+  }
+  .confirm-message { margin: 0 0 18px; font-size: 15px; font-weight: 700; white-space: pre-line; }
+  .confirm-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .confirm-actions button {
+    min-height: 46px; border-radius: 11px; font: inherit; font-size: 14px; font-weight: 700;
+  }
+  .confirm-cancel { background: #fff; color: var(--ink-soft); border: 1px solid var(--line); }
+  .confirm-execute { background: var(--mauve); color: #fff; border: 1px solid var(--mauve); }
+
+  .confetti-layer { position: fixed; inset: 0; z-index: 50; overflow: hidden; pointer-events: none; }
+  .confetti-piece {
+    position: absolute; top: -14px; width: 8px; height: 13px; border-radius: 2px;
+    animation: confetti-fall 1s ease-out forwards;
+  }
+  @keyframes confetti-fall {
+    to { transform: translate3d(var(--confetti-x), 105vh, 0) rotate(var(--confetti-r)); opacity: .2; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .confetti-layer { display: none; }
+  }
+
+  /* ── ローディングオーバーレイ ── */
+  #overlay {
+    display: none; position: fixed; inset: 0; z-index: 50;
+    background: rgba(250,247,240,.88);
+    align-items: center; justify-content: center; flex-direction: column; gap: 14px;
+  }
+  #overlay.show { display: flex; }
+  .spinner {
+    width: 44px; height: 44px; border-radius: 50%;
+    border: 4px solid var(--line); border-top-color: var(--mauve);
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #overlay .msg { font-size: 14px; color: var(--ink-soft); }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }
+
+  /* ── Phase1 追加：資料でチェック ── */
+  .btn-extract-entry {
+    display: block; width: 100%; text-align: center; border-radius: var(--radius);
+    border: 1.5px dashed var(--mauve); color: var(--mauve-deep); background: var(--mauve-pale);
+    font-size: 14px; font-weight: 700; padding: 12px; margin-bottom: 14px;
+  }
+  .extract-upload-box {
+    background: var(--card); border: 1.5px dashed var(--line); border-radius: var(--radius);
+    padding: 28px 16px; text-align: center; margin-bottom: 14px;
+  }
+  .extract-upload-box input[type="file"] { display: none; }
+  .extract-result-card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px; margin-bottom: 14px;
+  }
+  .extract-field { padding: 10px 2px; border-top: 1px solid var(--line); }
+  .extract-field:first-child { border-top: none; }
+  .extract-field dt { color: var(--ink-soft); font-size: 13px; margin-bottom: 4px; }
+  .extract-field dd { margin: 0; font-size: 15px; white-space: pre-wrap; word-break: break-word; }
+  .extract-note {
+    font-size: 12px; color: var(--ink-soft); background: var(--mauve-pale);
+    border-radius: 10px; padding: 8px 10px; margin-top: 8px;
+  }
+  .extract-docs {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px; margin: 12px 0;
+  }
+  .extract-docs-title { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+  .extract-doc-item {
+    display: flex; align-items: flex-start; gap: 8px; padding: 8px 0;
+    border-top: 1px solid var(--line); font-size: 13px;
+  }
+  .extract-doc-item:first-child { border-top: none; }
+  .extract-doc-type {
+    flex-shrink: 0; color: var(--mauve-deep); background: var(--mauve-pale);
+    border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 700;
+  }
+  .extract-doc-name { word-break: break-all; }
+  .extract-doc-status { margin-left: auto; color: var(--ok); white-space: nowrap; font-size: 11px; }
+
+
+  /* ── Phase2：案件カルテ編集 ── */
+  .phase2-intro {
+    background: var(--mauve-pale); border-radius: 12px; padding: 12px 14px;
+    color: var(--ink-soft); font-size: 13px; margin-bottom: 14px;
+  }
+  .phase2-section {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 15px; margin-bottom: 12px;
+  }
+  .phase2-section h3 { margin: 0 0 12px; font-size: 16px; color: var(--plum); }
+  .form-group { margin-bottom: 12px; }
+  .form-group:last-child { margin-bottom: 0; }
+  .form-label { display:block; color:var(--ink-soft); font-size:12px; margin-bottom:5px; }
+  .form-input, .form-textarea, .form-select {
+    width:100%; border:1px solid var(--line); border-radius:10px; background:#fff;
+    color:var(--ink); font:inherit; padding:10px 11px; outline:none;
+  }
+  .form-textarea { min-height:78px; resize:vertical; }
+  .form-input:focus, .form-textarea:focus, .form-select:focus { border-color:var(--mauve); }
+  .source-note { margin-top:4px; color:var(--ink-soft); font-size:11px; }
+  .phase2-warning {
+    border-left:3px solid #C58A34; background:#FFF7E8; border-radius:8px;
+    padding:8px 10px; font-size:12px; margin-bottom:7px;
+  }
+  .item-editor { border:1px solid var(--line); border-radius:10px; padding:10px; margin-bottom:9px; }
+  .item-grid { display:grid; grid-template-columns:1fr 72px 68px; gap:7px; }
+  .item-spec { margin-top:7px; }
+  .btn-mini {
+    border:1px solid var(--line); background:#fff; color:var(--ink-soft);
+    border-radius:8px; padding:7px 10px; font-size:12px; font-weight:700;
+  }
+  .tag-list { display:flex; flex-wrap:wrap; gap:6px; }
+  .tag-chip {
+    background:var(--mauve-pale); color:var(--mauve-deep);
+    border-radius:999px; padding:3px 9px; font-size:11px;
+  }
+
+
+  .spec-tag-list {
+    display:flex;
+    flex-wrap:wrap;
+    gap:5px;
+    margin-top:7px;
+  }
+  .spec-tag {
+    background:#F3EEF5;
+    border:1px solid #E2D6E7;
+    color:var(--mauve-deep);
+    border-radius:999px;
+    padding:3px 8px;
+    font-size:11px;
+  }
+  .confidence-note {
+    font-size:11px;
+    margin-top:5px;
+    color:var(--ink-soft);
+  }
+  .confidence-high { color:#43815E; }
+  .confidence-mid { color:#A56C22; }
+  .confidence-low { color:#A34747; }
+
+</style>
+</head>
+<body>
+
+<header>
+  <div class="bar">
+    <h1>
+      <svg class="brand-icon" width="30" height="24" viewBox="0 0 130 100" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <!-- 飛ぶ蝶々（左） -->
+        <path d="M40 28 C 42 20, 46 16, 50 13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/>
+        <path d="M60 28 C 58 20, 54 16, 50 13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/>
+        <path d="M50 32 C 30 8, 4 14, 10 38 C 14 52, 32 52, 50 42 Z"/>
+        <path d="M50 32 C 70 8, 96 14, 90 38 C 86 52, 68 52, 50 42 Z"/>
+        <path d="M50 42 C 34 53, 16 56, 19 68 C 21 76, 32 74, 50 60 Z" opacity=".85"/>
+        <path d="M50 42 C 66 53, 84 56, 81 68 C 79 76, 68 74, 50 60 Z" opacity=".85"/>
+        <rect x="47.5" y="30" width="5" height="30" rx="2.5"/>
+        <!-- 歩く猫（右） -->
+        <g transform="translate(78,54) scale(0.62)">
+          <path d="M44 6 C 60 2, 66 -8, 60 -16 C 57 -8, 52 -2, 42 4 Z"/>
+          <path d="M4 14 C 4 2, 16 -4, 34 -4 C 54 -4, 68 2, 70 12 C 71 17, 68 20, 62 20 L 12 20 C 6 20, 4 18, 4 14 Z"/>
+          <circle cx="10" cy="-2" r="10"/>
+          <path d="M2 -10 L -1 -20 L 8 -12 Z"/>
+          <path d="M14 -12 L 16 -22 L 22 -13 Z"/>
+          <rect x="10" y="18" width="7" height="15" rx="3.5"/>
+          <rect x="26" y="21" width="7" height="12" rx="3.5"/>
+          <rect x="44" y="21" width="7" height="12" rx="3.5"/>
+          <rect x="58" y="18" width="7" height="15" rx="3.5"/>
+        </g>
+      </svg>
+      入札にゃん
+    </h1>
+    <button class="btn-refresh" id="btnRefresh" type="button">更新</button>
+  </div>
+  <div class="swallowtail-stripe"></div>
+</header>
+
+<main>
+  <div class="error-banner" id="errorBanner"></div>
+
+  <!-- ── ビュー1：案件一覧 ── -->
+  <section class="view active" id="view-list">
+    <!-- Phase1 追加：資料でチェックへの入口ボタン -->
+    <button class="btn-extract-entry" id="btnOpenExtract" type="button">📄 資料でチェック（PDFから抽出）</button>
+    <div class="list-meta" id="listMeta"></div>
+    <div id="caseList"></div>
+  </section>
+
+  <!-- ── ビュー2：案件詳細 ── -->
+  <section class="view" id="view-detail">
+    <a href="#" class="back-link" id="btnBackFromDetail">← 案件一覧へ戻る</a>
+    <div class="detail-card">
+      <h2 id="dCaseName">—</h2>
+      <div class="detail-org" id="dOrg">—</div>
+      <dl class="fields">
+        <div><dt>案件ID</dt><dd id="dCaseId">—</dd></div>
+        <div><dt>想定入札額(税抜)</dt><dd id="dAmount">—</dd></div>
+        <div><dt>納品期限</dt><dd id="dDeadline">—</dd></div>
+        <div><dt>見積書PDF</dt><dd id="dPdf">未生成</dd></div>
+      </dl>
+    </div>
+    <button class="btn-primary" id="btnGenerate" type="button">見積書を生成する</button>
+    <div class="hint">対応表にテンプレート登録済みの発注機関のみ生成できます</div>
+  </section>
+
+  <!-- ── ビュー3：生成完了 ── -->
+  <section class="view" id="view-done">
+    <div class="done-card">
+      <div class="mark">🐈✨</div>
+      <h2>見積書ができたにゃん</h2>
+      <p id="doneMeta">—</p>
+      <a class="btn-primary" id="donePdfLink" href="#" target="_blank" rel="noopener">PDFを開く</a>
+      <a href="#" class="btn-secondary" id="btnBackFromDone">案件一覧へ戻る</a>
+    </div>
+  </section>
+
+  <!-- ── ビュー4：資料でチェック（Phase1 追加） ── -->
+  <section class="view" id="view-extract">
+    <a href="#" class="back-link" id="btnBackFromExtract">← 案件一覧へ戻る</a>
+
+    <!-- ①アップロード -->
+    <div id="extractUploadPane">
+      <div class="extract-upload-box">
+        <div style="font-size:15px; font-weight:700; margin-bottom:10px;">まずは公告や仕様書を選んでにゃん</div>
+        <label class="btn-primary" for="extractFileInput" style="display:inline-block; width:auto; padding:12px 22px;">
+          PDFを選択
+        </label>
+        <input type="file" id="extractFileInput" accept="application/pdf">
+        <div class="hint" id="extractFileName"></div>
+      </div>
+    </div>
+
+    <!-- ②3項目確認 -->
+    <div id="extractResultPane" style="display:none;">
+      <div class="extract-result-card">
+        <dl>
+          <div class="extract-field"><dt>参加資格</dt><dd id="exQual">—</dd></div>
+          <div class="extract-field"><dt>納期</dt><dd id="exDeadline">—</dd></div>
+          <div class="extract-field"><dt>発注元</dt><dd id="exOrg">—</dd></div>
+        </dl>
+        <div class="extract-note">推定抽出にゃん。正式な確認・修正はPhase 2の詳細画面で行うにゃん。</div>
+      </div>
+      <div class="extract-docs" id="extractDocsBox">
+        <div class="extract-docs-title">📎 一緒に読む資料にゃん</div>
+        <div id="extractDocsList"></div>
+        <div class="extract-note">公告・仕様書・別紙をまとめると、もっと正確に調べられるにゃん🐈</div>
+      </div>
+
+      <input type="file" id="extractAddFileInput" accept="application/pdf" style="display:none;">
+      <button class="btn-secondary" id="btnAddDocument" type="button">📎 仕様書や別紙も追加するにゃん</button>
+      <button class="btn-primary" id="btnProceedDetail" type="button" style="margin-top:10px;">もっと詳しく調べるにゃん</button>
+      <button class="btn-secondary" id="btnCancelExtract" type="button">今回はやめるにゃん</button>
+    </div>
+
+    <!-- ③Phase2案内（暫定） -->
+    <div id="extractProceedPane" style="display:none;">
+      <div class="extract-result-card" style="text-align:center;">
+        <p id="extractProceedMsg" style="margin:0;">—</p>
+      </div>
+      <a href="#" class="btn-secondary" id="btnBackFromProceed">案件一覧へ戻る</a>
+    </div>
+  </section>
+
+  <!-- ── ビュー5：Phase2 案件カルテ編集 ── -->
+  <section class="view" id="view-extract-detail">
+    <a href="#" class="back-link" id="btnBackToExtractResult">← 資料の確認へ戻る</a>
+    <div class="phase2-intro" id="phase2Intro">資料をまとめて案件カルテを作ったにゃん。未検出や誤りを確認してにゃん🐈</div>
+    <div id="phase2Warnings"></div>
+
+    <div class="phase2-section">
+      <h3>① 案件概要にゃん</h3>
+      <div class="form-group"><label class="form-label">正式案件名</label><input class="form-input" id="p2Title"></div>
+      <div class="form-group"><label class="form-label">発注元</label><input class="form-input" id="p2Org"></div>
+      <div class="form-group"><label class="form-label">参加資格</label><textarea class="form-textarea" id="p2Qualification"></textarea></div>
+      <div class="form-group"><label class="form-label">案件カテゴリ</label>
+        <select class="form-select" id="p2Category">
+          <option>物品</option><option>印刷</option><option>防災・備蓄</option>
+          <option>食品</option><option>ノベルティ</option><option>役務</option><option>その他</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">案件概要</label><textarea class="form-textarea" id="p2Summary"></textarea></div>
+    </div>
+
+    <div class="phase2-section">
+      <h3>② 品目・仕様にゃん</h3>
+      <div id="p2Items"></div>
+      <button class="btn-mini" id="btnAddPhase2Item" type="button">＋ 品目を追加するにゃん</button>
+    </div>
+
+    <div class="phase2-section">
+      <h3>③ 納品条件にゃん</h3>
+      <div class="form-group"><label class="form-label">納期</label><input class="form-input" id="p2DeliveryDeadline"></div>
+      <div class="form-group"><label class="form-label">納品場所</label><textarea class="form-textarea" id="p2DeliveryPlace"></textarea></div>
+      <div class="form-group"><label class="form-label">納品方法・条件</label><textarea class="form-textarea" id="p2DeliveryMethod"></textarea></div>
+    </div>
+
+    <div class="phase2-section">
+      <h3>④ 提出情報にゃん</h3>
+      <div class="form-group"><label class="form-label">提出期限</label><input class="form-input" id="p2SubmissionDeadline"></div>
+      <div class="form-group"><label class="form-label">提出方法</label><textarea class="form-textarea" id="p2SubmissionMethod"></textarea></div>
+      <div class="form-group"><label class="form-label">提出先・宛名</label><textarea class="form-textarea" id="p2SubmissionTo"></textarea></div>
+      <div class="form-group"><label class="form-label">税込・税別など</label><input class="form-input" id="p2TaxTreatment"></div>
+    </div>
+
+    <div class="phase2-section">
+      <h3>⑤ 同等品・添付資料にゃん</h3>
+      <div class="form-group"><label class="form-label">同等品可否</label><input class="form-input" id="p2EquivalentStatus"></div>
+      <div class="form-group"><label class="form-label">同等品申請期限</label><input class="form-input" id="p2EquivalentDeadline"></div>
+      <div class="form-group"><label class="form-label">案件特徴</label><div class="tag-list" id="p2Features"></div></div>
+      <div class="form-group"><label class="form-label">タグ</label><input class="form-input" id="p2Tags" placeholder="カンマ区切り"></div>
+      <div class="form-group"><label class="form-label">添付資料判定</label><div id="p2AttachmentSummary" class="source-note"></div></div>
+    </div>
+
+    <button class="btn-primary" id="btnSavePhase2" type="button">案件登録するにゃん</button>
+    <button class="btn-secondary" id="btnCancelPhase2" type="button">今回はやめるにゃん</button>
+  </section>
+
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<div class="confirm-modal" id="statusConfirmModal" role="dialog" aria-modal="true" aria-labelledby="statusConfirmMessage">
+  <div class="confirm-dialog">
+    <p class="confirm-message" id="statusConfirmMessage"></p>
+    <div class="confirm-actions">
+      <button class="confirm-cancel" id="statusConfirmCancel" type="button">あとで</button>
+      <button class="confirm-execute" id="statusConfirmExecute" type="button">記録する</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── ローディング ── -->
+<div id="overlay">
+  <div class="spinner" role="status" aria-label="読み込み中"></div>
+  <div class="msg" id="overlayMsg">読み込み中にゃん…</div>
+</div>
+
+<script>
+/* ============================================================
+ * クライアント側ロジック
+ *  ・サーバー呼び出しは callApi() に一本化
+ *  ・APIは必ず {success, data, error} を返す前提（Ver3 Web共通契約）
+ * ============================================================ */
+
+var state = {
+  cases: [],             // 一覧キャッシュ
+  currentCase: null,     // 詳細表示中の案件
+  extractSession: null,  // Phase1 追加：資料でチェック・現在のセッションID
+  extractDocuments: [],   // Ver2.0：同じ案件に紐づく資料一覧
+  phase2Detail: null,      // Ver2.2-Final：編集中の案件カルテ
+};
+
+// ── ユーティリティ ──────────────────────────────
+
+function $(id) { return document.getElementById(id); }
+
+function showView(name) {
+  document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('active'); });
+  $('view-' + name).classList.add('active');
+  window.scrollTo(0, 0);
+}
+
+function showOverlay(msg) {
+  $('overlayMsg').textContent = msg || '読み込み中にゃん…';
+  $('overlay').classList.add('show');
+}
+function hideOverlay() { $('overlay').classList.remove('show'); }
+
+function showError(msg) {
+  var b = $('errorBanner');
+  b.textContent = msg;
+  b.classList.add('show');
+  window.scrollTo(0, 0);
+}
+function clearError() { $('errorBanner').classList.remove('show'); }
+
+var toastTimer = null;
+function showToast(msg) {
+  var toast = $('toast');
+  toast.textContent = msg;
+  toast.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { toast.classList.remove('show'); }, 3000);
+}
+
+/**
+ * サーバーAPI呼び出しの共通ラッパー。
+ * @param {string} fnName  api_ 関数名
+ * @param {Array}  args    引数の配列
+ * @param {string} loadingMsg
+ * @param {function(object)} onData  成功時（data部分だけ渡す）
+ */
+function callApi(fnName, args, loadingMsg, onData, onError) {
+  clearError();
+  showOverlay(loadingMsg);
+  var runner = google.script.run
+    .withSuccessHandler(function (res) {
+      hideOverlay();
+      if (res && res.success) {
+        onData(res.data);
+      } else {
+        var message = (res && res.error) || '不明なエラーが発生したにゃん。';
+        showError(message);
+        if (onError) onError(message);
+      }
+    })
+    .withFailureHandler(function (err) {
+      hideOverlay();
+      var message = '通信エラーにゃん：' + (err && err.message ? err.message : err);
+      showError(message);
+      if (onError) onError(message);
+    });
+  runner[fnName].apply(runner, args || []);
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function getStatusPresentation(status) {
+  var label = String(status == null ? '' : status).trim();
+  var keys = {
+    '検討中': 'status-considering',
+    '見積中': 'status-estimating',
+    '入札済': 'status-bid',
+    '落札': 'status-won',
+    '失注': 'status-lost',
+    '見送り': 'status-skipped',
+    '納品完了': 'status-delivered',
+    '請求済': 'status-invoiced'
+  };
+  if (!label) return { label: '', className: '' };
+  return { label: label, className: keys[label] || 'status-unknown' };
+}
+
+function getStatusAction(status) {
+  var actions = {
+    '入札済': { confirm: 'この案件を入札済にしますか？', message: '入札完了！あとは結果を待つにゃん🐾' },
+    '落札': {
+      confirm: '🎉 落札おめでとうにゃん！\n\nこの案件を「落札」として記録する？',
+      executeLabel: '🏆 記録する',
+      message: '🏆 落札として記録したにゃん！\n次も一緒に取りに行こう🐾',
+      celebrate: true
+    },
+    '失注': {
+      confirm: '🐾 結果を記録するにゃん。\n\nこの案件を「失注」として登録する？',
+      executeLabel: '❌ 記録する',
+      message: '📊 データを蓄積したにゃん。\n次はもっと勝てる見積を一緒に考えよう！'
+    },
+    '見送り': { confirm: 'この案件を見送りにしますか？', message: '見送りとして記録したにゃん' }
+  };
+  return actions[status];
+}
+
+function parseCaseDeadline(value) {
+  var text = String(value == null ? '' : value).trim();
+  if (!text) return null;
+  var match = text.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})(?:\D+(\d{1,2}):(\d{2}))?/);
+  if (!match) return null;
+  var hasTime = match[4] != null;
+  var date = new Date(
+    Number(match[1]), Number(match[2]) - 1, Number(match[3]),
+    hasTime ? Number(match[4]) : 23,
+    hasTime ? Number(match[5]) : 59,
+    hasTime ? 0 : 59
+  );
+  return isNaN(date.getTime()) ? null : { date: date, hasTime: hasTime };
+}
+
+function isSameDate(a, b) {
+  return a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function formatActionDeadline(parsed) {
+  if (!parsed) return '締切未設定';
+  var date = parsed.date;
+  var weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+  var label = (date.getMonth() + 1) + '/' + date.getDate() + '(' + weekdays[date.getDay()] + ')';
+  if (parsed.hasTime) {
+    label += ' ' + String(date.getHours()).padStart(2, '0') + ':' +
+      String(date.getMinutes()).padStart(2, '0');
+  }
+  return label;
+}
+
+function getPrimaryAction(caseData, now) {
+  var canSubmit = caseData.pdfUrl &&
+    (caseData.status === '検討中' || caseData.status === '見積中');
+  if (!canSubmit) return null;
+
+  var parsed = parseCaseDeadline(caseData.deadline);
+  if (parsed && parsed.date.getTime() < now.getTime()) {
+    return {
+      type: 'overdue', priority: 5, className: 'action-overdue',
+      title: '⚠ 締切超過・状態を確認', deadline: formatActionDeadline(parsed)
+    };
+  }
+
+  var priority = 3;
+  var className = 'action-normal';
+  if (parsed) {
+    var remaining = parsed.date.getTime() - now.getTime();
+    var tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    if (remaining <= 3 * 60 * 60 * 1000) {
+      priority = 0;
+      className = 'action-urgent';
+    } else if (isSameDate(parsed.date, now)) {
+      priority = 1;
+      className = 'action-today';
+    } else if (isSameDate(parsed.date, tomorrow)) {
+      priority = 2;
+      className = 'action-tomorrow';
+    }
+  }
+  return {
+    type: 'submission', priority: priority, className: className,
+    title: '📤 PDF完成・提出待ち', deadline: formatActionDeadline(parsed)
+  };
+}
+
+function renderPrimaryAction(action) {
+  if (!action) return '';
+  var button = action.type === 'submission'
+    ? '<button class="btn-next-action" type="button" data-status="入札済">提出済みにする</button>'
+    : '';
+  return '<div class="next-action ' + action.className + '">' +
+    '<div class="next-action-title">' + escapeHtml(action.title) + '</div>' +
+    '<div class="next-action-row">' +
+      '<div class="next-action-deadline">締切<strong>' + escapeHtml(action.deadline) + '</strong></div>' +
+      button +
+    '</div>' +
+  '</div>';
+}
+
+function showStatusConfirm(action, onConfirm) {
+  if (!action.executeLabel) {
+    if (window.confirm(action.confirm)) onConfirm();
+    return;
+  }
+
+  var modal = $('statusConfirmModal');
+  var cancel = $('statusConfirmCancel');
+  var execute = $('statusConfirmExecute');
+  $('statusConfirmMessage').textContent = action.confirm;
+  execute.textContent = action.executeLabel;
+  modal.classList.add('show');
+  execute.focus();
+
+  function close(confirmed) {
+    modal.classList.remove('show');
+    cancel.removeEventListener('click', cancelHandler);
+    execute.removeEventListener('click', executeHandler);
+    if (confirmed) onConfirm();
+  }
+  function cancelHandler() { close(false); }
+  function executeHandler() { close(true); }
+  cancel.addEventListener('click', cancelHandler);
+  execute.addEventListener('click', executeHandler);
+}
+
+function showWinConfetti() {
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+  var layer = document.createElement('div');
+  var colors = ['#D9A928', '#3D8357', '#A6688E', '#5577A5', '#E8C95A'];
+  layer.className = 'confetti-layer';
+  for (var i = 0; i < 30; i++) {
+    var piece = document.createElement('i');
+    piece.className = 'confetti-piece';
+    piece.style.left = Math.random() * 100 + '%';
+    piece.style.background = colors[i % colors.length];
+    piece.style.setProperty('--confetti-x', (Math.random() * 120 - 60) + 'px');
+    piece.style.setProperty('--confetti-r', (Math.random() * 720 - 360) + 'deg');
+    piece.style.animationDelay = Math.random() * 0.12 + 's';
+    layer.appendChild(piece);
+  }
+  document.body.appendChild(layer);
+  setTimeout(function () { if (layer.parentNode) layer.parentNode.removeChild(layer); }, 1200);
+}
+
+function updateCaseCardStatus(card, statusValue) {
+  var status = getStatusPresentation(statusValue);
+  var statusClasses = [
+    'status-considering', 'status-estimating', 'status-bid', 'status-won',
+    'status-lost', 'status-skipped', 'status-delivered', 'status-invoiced', 'status-unknown'
+  ];
+  statusClasses.forEach(function (className) { card.classList.remove(className); });
+  if (status.className) card.classList.add(status.className);
+
+  var badge = card.querySelector('.pill-status');
+  if (!badge && status.label) {
+    badge = document.createElement('span');
+    badge.className = 'pill-status';
+    card.querySelector('.case-top').insertBefore(badge, card.querySelector('.pill-pdf'));
+  }
+  if (badge) {
+    badge.textContent = status.label;
+    badge.style.display = status.label ? '' : 'none';
+  }
+}
+
+function updateCaseStatus(card, caseData, button, newStatus) {
+  var action = getStatusAction(newStatus);
+  if (!action) return;
+
+  showStatusConfirm(action, function () {
+    button.disabled = true;
+    callApi('api_updateCaseStatus', [caseData.caseId, newStatus], '状態を更新中にゃん…', function (data) {
+      caseData.status = data.status;
+      if (state.currentCase && state.currentCase.caseId === caseData.caseId) {
+        state.currentCase.status = data.status;
+      }
+      updateCaseCardStatus(card, data.status);
+      button.disabled = false;
+      if (action.celebrate) showWinConfetti();
+      showToast(action.message);
+    }, function () {
+      button.disabled = false;
+    });
+  });
+}
+
+// ── 案件一覧 ────────────────────────────────────
+
+function loadCases() {
+  callApi('api_listCases', [100], '案件を読み込み中にゃん…', function (data) {
+    state.cases = (data && data.cases) || [];
+    renderCaseList();
+  });
+}
+
+function renderCaseList() {
+  var listEl = $('caseList');
+  var cases = state.cases;
+
+  $('listMeta').textContent = cases.length
+    ? '直近 ' + cases.length + ' 件を表示中（新しい順）'
+    : '';
+
+  if (!cases.length) {
+    listEl.innerHTML = '<div class="empty">表示できる案件がないにゃん。<br>01_案件管理に案件を追加してから「更新」を押してにゃん。</div>';
+    return;
+  }
+
+  var now = new Date();
+  var displayCases = cases.map(function (c, idx) {
+    return { caseData: c, sourceIndex: idx, action: getPrimaryAction(c, now) };
+  }).sort(function (a, b) {
+    var aPriority = a.action ? a.action.priority : 4;
+    var bPriority = b.action ? b.action.priority : 4;
+    if (aPriority !== bPriority) return aPriority - bPriority;
+    return a.sourceIndex - b.sourceIndex;
+  });
+
+  var html = displayCases.map(function (item) {
+    var c = item.caseData;
+    var idx = item.sourceIndex;
+    var status = getStatusPresentation(c.status);
+    return (
+      '<div class="case-card ' + status.className + '" data-idx="' + idx + '">' +
+        '<div class="case-top">' +
+          '<span class="pill-id">' + escapeHtml(c.caseId) + '</span>' +
+          (status.label ? '<span class="pill-status">' + escapeHtml(status.label) + '</span>' : '') +
+        '</div>' +
+        '<div class="case-name">' + escapeHtml(c.caseName || '(案件名なし)') + '</div>' +
+        '<div class="case-sub">' +
+          '<span>' + escapeHtml(c.org || '発注機関 未設定') + '</span>' +
+          (c.deadline ? '<span>納期 ' + escapeHtml(c.deadline) + '</span>' : '') +
+        '</div>' +
+        renderPrimaryAction(item.action) +
+        '<div class="case-actions" aria-label="案件の状態を更新">' +
+          '<button class="btn-status" type="button" data-status="入札済">📤 入札した</button>' +
+          '<button class="btn-status" type="button" data-status="落札">🏆 落札した！</button>' +
+          '<button class="btn-status" type="button" data-status="失注">❌ 失注だった</button>' +
+          '<button class="btn-status" type="button" data-status="見送り">⏸ 見送る</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }).join('');
+
+  listEl.innerHTML = html;
+
+  listEl.querySelectorAll('.case-card').forEach(function (card) {
+    card.addEventListener('click', function () {
+      var c = state.cases[Number(card.getAttribute('data-idx'))];
+      openDetail(c.caseId);
+    });
+    card.querySelectorAll('.btn-status, .btn-next-action').forEach(function (button) {
+      button.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var c = state.cases[Number(card.getAttribute('data-idx'))];
+        updateCaseStatus(card, c, button, button.getAttribute('data-status'));
+      });
+    });
+  });
+}
+
+// ── 案件詳細 ────────────────────────────────────
+
+function openDetail(caseId) {
+  callApi('api_getCaseDetail', [caseId], '案件情報を取得中にゃん…', function (data) {
+    state.currentCase = data.case;
+    renderDetail();
+    showView('detail');
+  });
+}
+
+function renderDetail() {
+  var c = state.currentCase;
+  if (!c) return;
+  $('dCaseName').textContent = c.caseName || '(案件名なし)';
+  $('dOrg').textContent = c.org || '発注機関 未設定';
+  $('dCaseId').textContent = c.caseId;
+  $('dAmount').textContent = c.amount ? '¥' + c.amount : '未入力';
+  $('dDeadline').textContent = c.deadline || '未入力';
+
+  var pdfEl = $('dPdf');
+  if (c.pdfUrl) {
+    pdfEl.innerHTML = '<a href="' + escapeHtml(c.pdfUrl) + '" target="_blank" rel="noopener">生成済みPDFを開く</a>';
+  } else {
+    pdfEl.textContent = '未生成';
+  }
+
+  $('btnGenerate').textContent = c.pdfUrl ? '見積書を再生成する' : '見積書を生成する';
+}
+
+// ── 見積書生成 ──────────────────────────────────
+
+function generateEstimate() {
+  var c = state.currentCase;
+  if (!c) return;
+
+  if (c.pdfUrl) {
+    var ok = window.confirm('この案件は生成済みにゃん。もう一度生成するにゃん？\n（新しいPDFが作られ、リンクが上書きされるにゃん）');
+    if (!ok) return;
+  }
+
+  callApi('api_generateEstimate', [c.caseId], '見積書を生成中にゃん…（20秒ほどかかるにゃん）', function (data) {
+    $('doneMeta').textContent = '案件ID ' + data.caseId + '／' + data.org;
+    $('donePdfLink').setAttribute('href', data.pdfUrl);
+    // 一覧・詳細キャッシュにも反映
+    c.pdfUrl = data.pdfUrl;
+    var inList = state.cases.find(function (x) { return x.caseId === c.caseId; });
+    if (inList) inList.pdfUrl = data.pdfUrl;
+    showView('done');
+  });
+}
+
+// ── Phase1 追加：資料でチェック ──────────────────────
+
+
+function applyExtractSessionData(data) {
+  if (!data) return;
+  if (data.sessionId) state.extractSession = data.sessionId;
+  state.extractDocuments = data.documents || state.extractDocuments || [];
+  $('exQual').textContent = data.qualification || '（未検出・推定できず）';
+  $('exDeadline').textContent = data.deadline || '（未検出・推定できず）';
+  $('exOrg').textContent = data.org || '（未検出・推定できず）';
+  renderExtractDocuments();
+}
+
+function renderExtractDocuments() {
+  var list = $('extractDocsList');
+  if (!list) return;
+  var docs = state.extractDocuments || [];
+  if (!docs.length) {
+    list.innerHTML = '<div class="hint">まだ資料がないにゃん。</div>';
+    return;
+  }
+  list.innerHTML = docs.map(function (doc) {
+    return '<div class="extract-doc-item">' +
+      '<span>📄</span>' +
+      '<span class="extract-doc-type">' + escapeHtml(doc.documentType || '不明') + '</span>' +
+      '<span class="extract-doc-name">' + escapeHtml(doc.fileName || '名称なし') + '</span>' +
+      '<span class="extract-doc-status">OCR済み ✓</span>' +
+    '</div>';
+  }).join('');
+}
+
+function selectAdditionalDocument() {
+  if (!state.extractSession) return;
+  $('extractAddFileInput').value = '';
+  $('extractAddFileInput').click();
+}
+
+function handleAdditionalPdfSelected(e) {
+  var file = e.target.files && e.target.files[0];
+  if (!file || !state.extractSession) return;
+
+  fileToBase64(file, function (base64) {
+    callApi('api_addExtractDocument',
+      [state.extractSession, base64, file.name, file.type || 'application/pdf'],
+      '追加の資料を読んでるにゃん…',
+      function (data) {
+        applyExtractSessionData(data);
+      });
+  });
+}
+
+function resetExtractView() {
+  state.extractSession = null;
+  state.extractDocuments = [];
+  $('extractFileInput').value = '';
+  $('extractAddFileInput').value = '';
+  $('extractFileName').textContent = '';
+  $('extractUploadPane').style.display = '';
+  $('extractResultPane').style.display = 'none';
+  $('extractProceedPane').style.display = 'none';
+}
+
+function fileToBase64(file, onDone) {
+  var reader = new FileReader();
+  reader.onload = function () {
+    var base64 = reader.result.split(',')[1]; // "data:application/pdf;base64," を除去
+    onDone(base64);
+  };
+  reader.onerror = function () {
+    showError('PDFの読み込みに失敗したにゃん。');
+  };
+  reader.readAsDataURL(file);
+}
+
+function handlePdfFileSelected(e) {
+  var file = e.target.files && e.target.files[0];
+  if (!file) return;
+  $('extractFileName').textContent = file.name;
+
+  fileToBase64(file, function (base64) {
+    callApi('api_extractKey3', [base64, file.name, file.type || 'application/pdf'],
+      'PDFを読み取り中にゃん…（少し時間がかかるにゃん）',
+      function (data) {
+        applyExtractSessionData(data);
+        $('extractUploadPane').style.display = 'none';
+        $('extractResultPane').style.display = '';
+      });
+  });
+}
+
+function proceedToDetail() {
+  if (!state.extractSession) return;
+  callApi('api_proceedToDetailExtraction', [state.extractSession], '資料をまとめて案件カルテを作ってるにゃん…', function (data) {
+    renderPhase2Detail(data);
+    showView('extract-detail');
+  });
+}
+
+
+function valueOfField(obj) {
+  return obj && typeof obj === 'object' ? (obj.value || '') : (obj || '');
+}
+
+function renderPhase2Items(items) {
+  var box = $('p2Items');
+  var rows = (items && items.length)
+    ? items
+    : [{name:'', quantity:'', unit:'', specification:'', specificationTags:[]}];
+
+  box.innerHTML = rows.map(function(item, idx) {
+    var tags = item.specificationTags || [];
+    var confidence = Number(item.specificationConfidence || item.confidence || 0);
+    var confidenceClass = confidence >= 80
+      ? 'confidence-high'
+      : (confidence >= 50 ? 'confidence-mid' : 'confidence-low');
+
+    return '<div class="item-editor" data-item-index="' + idx + '">' +
+      '<div class="item-grid">' +
+        '<input class="form-input p2-item-name" placeholder="品目名" value="' + escapeHtml(item.name || '') + '">' +
+        '<input class="form-input p2-item-qty" placeholder="数量" value="' + escapeHtml(item.quantity || '') + '">' +
+        '<input class="form-input p2-item-unit" placeholder="単位" value="' + escapeHtml(item.unit || '') + '">' +
+      '</div>' +
+      '<textarea class="form-textarea item-spec p2-item-spec" placeholder="規格・仕様">' +
+        escapeHtml(item.specification || '') +
+      '</textarea>' +
+      '<div class="spec-tag-list">' +
+        tags.map(function(tag) {
+          return '<span class="spec-tag">' + escapeHtml(tag) + '</span>';
+        }).join('') +
+      '</div>' +
+      '<div class="confidence-note ' + confidenceClass + '">' +
+        (confidence ? '抽出信頼度 ' + confidence + '%' : '規格は要確認にゃん') +
+      '</div>' +
+      '<button class="btn-mini p2-remove-item" type="button">この品目を削除</button>' +
+    '</div>';
+  }).join('');
+
+  box.querySelectorAll('.p2-remove-item').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var row = btn.closest('.item-editor');
+      if (box.querySelectorAll('.item-editor').length > 1) {
+        row.remove();
+      } else {
+        row.querySelectorAll('input,textarea').forEach(function(el) {
+          el.value = '';
+        });
+      }
+    });
+  });
+}
+
+
+function confidenceLabel(score) {
+  score = Number(score || 0);
+  if (score >= 85) return '🟢 ' + score + '%';
+  if (score >= 60) return '🟡 ' + score + '%';
+  if (score > 0) return '🔴 ' + score + '%';
+  return '⚪ 未判定';
+}
+
+function appendConfidenceToLabels(detail) {
+  var c = detail.confidence || {};
+  var map = {
+    p2Title: c.title,
+    p2Org: c.org,
+    p2Qualification: c.qualification,
+    p2Category: c.category,
+    p2Summary: c.summary,
+    p2DeliveryDeadline: c.deliveryDeadline,
+    p2DeliveryPlace: c.deliveryPlace,
+    p2DeliveryMethod: c.deliveryMethod,
+    p2SubmissionDeadline: c.submissionDeadline,
+    p2SubmissionMethod: c.submissionMethod,
+    p2SubmissionTo: c.submissionTo,
+    p2TaxTreatment: c.taxTreatment,
+    p2EquivalentStatus: c.equivalentProduct
+  };
+
+  Object.keys(map).forEach(function(id) {
+    var el = $(id);
+    if (!el) return;
+    var label = el.closest('.form-group') && el.closest('.form-group').querySelector('.form-label');
+    if (!label) return;
+    var original = label.getAttribute('data-label-original') || label.textContent.replace(/\s+[🟢🟡🔴⚪].*$/, '');
+    label.setAttribute('data-label-original', original);
+    label.textContent = original + '　' + confidenceLabel(map[id]);
+  });
+}
+
+function renderPhase2Detail(data) {
+  var d = data.detail || data;
+  state.phase2Detail = d;
+  $('phase2Intro').textContent = data.message || '案件カルテを作ったにゃん。内容を確認してにゃん🐈';
+
+  $('p2Title').value = valueOfField(d.basic && d.basic.title);
+  $('p2Org').value = valueOfField(d.basic && d.basic.org);
+  $('p2Qualification').value = valueOfField(d.basic && d.basic.qualification);
+  $('p2Category').value = valueOfField(d.basic && d.basic.category) || '物品';
+  $('p2Summary').value = valueOfField(d.basic && d.basic.summary);
+
+  renderPhase2Items(d.items || []);
+
+  $('p2DeliveryDeadline').value = valueOfField(d.delivery && d.delivery.deadline);
+  $('p2DeliveryPlace').value = valueOfField(d.delivery && d.delivery.place);
+  $('p2DeliveryMethod').value = valueOfField(d.delivery && d.delivery.method);
+
+  $('p2SubmissionDeadline').value = valueOfField(d.submission && d.submission.deadline);
+  $('p2SubmissionMethod').value = valueOfField(d.submission && d.submission.method);
+  $('p2SubmissionTo').value = valueOfField(d.submission && d.submission.to);
+  $('p2TaxTreatment').value = valueOfField(d.submission && d.submission.taxTreatment);
+
+  $('p2EquivalentStatus').value = valueOfField(d.equivalentProduct && d.equivalentProduct.status);
+  $('p2EquivalentDeadline').value = valueOfField(d.equivalentProduct && d.equivalentProduct.deadline);
+
+  var features = d.features || [];
+  $('p2Features').innerHTML = features.length
+    ? features.map(function(x) { return '<span class="tag-chip">' + escapeHtml(x) + '</span>'; }).join('')
+    : '<span class="source-note">特徴は未検出にゃん。</span>';
+  $('p2Tags').value = (d.tags || []).join(', ');
+
+  var a = d.attachments || {};
+  var att = [];
+  if (a.hasSpecification) att.push('仕様書アップロード済み');
+  if (a.hasAppendix) att.push('別紙アップロード済み');
+  else if (a.mentionedAppendix) att.push('別紙の記載あり（未追加か確認）');
+
+  if (a.hasDrawing) att.push('図面アップロード済み');
+  else if (a.mentionedDrawing) att.push('図面の記載あり（未追加か確認）');
+
+  if (a.hasPrintData) att.push('印刷データアップロード済み');
+  else if (a.mentionedPrintData) att.push('印刷データの記載あり（未追加か確認）');
+
+  if (a.hasBreakdown) att.push('内訳書アップロード済み');
+  else if (a.mentionedBreakdown) att.push('内訳書の記載あり（未追加か確認）');
+
+  if (a.hasContractDraft) att.push('契約書案アップロード済み');
+  $('p2AttachmentSummary').textContent = att.length ? att.join('／') : '特別な添付資料は未検出にゃん。';
+
+  appendConfidenceToLabels(d);
+
+  var warnings = d.warnings || [];
+  $('phase2Warnings').innerHTML = warnings.map(function(w) {
+    return '<div class="phase2-warning">⚠️ ' + escapeHtml(w) + '</div>';
+  }).join('');
+}
+
+function collectPhase2Payload() {
+  var d = state.phase2Detail || {};
+  var items = [];
+  document.querySelectorAll('#p2Items .item-editor').forEach(function(row) {
+    var item = {
+      name: row.querySelector('.p2-item-name').value.trim(),
+      quantity: row.querySelector('.p2-item-qty').value.trim(),
+      unit: row.querySelector('.p2-item-unit').value.trim(),
+      specification: row.querySelector('.p2-item-spec').value.trim(),
+      specificationTags: [],
+      specificationSourceFiles: [],
+      specificationConfidence: 0
+    };
+
+    var originalIndex = Number(row.getAttribute('data-item-index') || 0);
+    var originalItem = state.phase2Detail && state.phase2Detail.items
+      ? state.phase2Detail.items[originalIndex]
+      : null;
+
+    if (originalItem) {
+      item.specificationTags = originalItem.specificationTags || [];
+      item.specificationSourceFiles = originalItem.specificationSourceFiles || [];
+      item.specificationConfidence = Number(originalItem.specificationConfidence || 0);
+    }
+    if (item.name || item.quantity || item.unit || item.specification) items.push(item);
+  });
+
+  return {
+    sessionId: state.extractSession,
+    basic: {
+      title: {value:$('p2Title').value.trim()},
+      org: {value:$('p2Org').value.trim()},
+      qualification: {value:$('p2Qualification').value.trim()},
+      category: {value:$('p2Category').value},
+      summary: {value:$('p2Summary').value.trim()}
+    },
+    items: items,
+    delivery: {
+      deadline:{value:$('p2DeliveryDeadline').value.trim()},
+      place:{value:$('p2DeliveryPlace').value.trim()},
+      method:{value:$('p2DeliveryMethod').value.trim()}
+    },
+    submission: {
+      deadline:{value:$('p2SubmissionDeadline').value.trim()},
+      method:{value:$('p2SubmissionMethod').value.trim()},
+      to:{value:$('p2SubmissionTo').value.trim()},
+      taxTreatment:{value:$('p2TaxTreatment').value.trim()}
+    },
+    equivalentProduct: {
+      status:{value:$('p2EquivalentStatus').value.trim()},
+      deadline:{value:$('p2EquivalentDeadline').value.trim()}
+    },
+    attachments: d.attachments || {},
+    features: d.features || [],
+    tags: $('p2Tags').value.split(',').map(function(x){return x.trim();}).filter(Boolean),
+    confidence: d.confidence || {},
+    warnings: d.warnings || [],
+    documents: d.documents || state.extractDocuments || []
+  };
+}
+
+function registerPhase2Case() {
+  if (!state.extractSession) return;
+  var payload = collectPhase2Payload();
+  callApi('api_registerPhase2Case', [state.extractSession, payload], '案件フォルダと案件マスターへ登録してるにゃん…', function(data) {
+    var message = '<strong>' + escapeHtml(data.message || '正式登録できたにゃん！') + '</strong>';
+    if (data.folderUrl) {
+      message += '<br><br><a href="' + escapeHtml(data.folderUrl) + '" target="_blank" rel="noopener">📁 案件フォルダを開く</a>';
+    }
+    $('extractProceedMsg').innerHTML = message;
+    showView('extract');
+    $('extractUploadPane').style.display = 'none';
+    $('extractResultPane').style.display = 'none';
+    $('extractProceedPane').style.display = '';
+    loadCases();
+  });
+}
+
+function cancelExtract() {
+  if (!state.extractSession) { resetExtractView(); showView('list'); return; }
+  callApi('api_cancelExtractSession', [state.extractSession], 'キャンセル中にゃん…', function () {
+    resetExtractView();
+    showView('list');
+  });
+}
+
+// ── イベント登録 ────────────────────────────────
+
+$('btnRefresh').addEventListener('click', loadCases);
+$('btnGenerate').addEventListener('click', generateEstimate);
+$('btnBackFromDetail').addEventListener('click', function (e) {
+  e.preventDefault();
+  renderCaseList();
+  showView('list');
+});
+$('btnBackFromDone').addEventListener('click', function (e) {
+  e.preventDefault();
+  renderCaseList();
+  showView('list');
+});
+
+// Phase1 追加：資料でチェックのイベント登録
+$('btnOpenExtract').addEventListener('click', function () {
+  resetExtractView();
+  showView('extract');
+});
+$('btnBackFromExtract').addEventListener('click', function (e) {
+  e.preventDefault();
+  cancelExtract(); // 一覧に戻る＝未確定のPDFは破棄する扱い
+});
+$('extractFileInput').addEventListener('change', handlePdfFileSelected);
+$('extractAddFileInput').addEventListener('change', handleAdditionalPdfSelected);
+$('btnAddDocument').addEventListener('click', selectAdditionalDocument);
+$('btnProceedDetail').addEventListener('click', proceedToDetail);
+$('btnCancelExtract').addEventListener('click', cancelExtract);
+$('btnBackFromProceed').addEventListener('click', function (e) {
+  e.preventDefault();
+  resetExtractView();
+  showView('list');
+});
+
+
+$('btnBackToExtractResult').addEventListener('click', function(e) {
+  e.preventDefault();
+  showView('extract');
+  $('extractUploadPane').style.display = 'none';
+  $('extractResultPane').style.display = '';
+  $('extractProceedPane').style.display = 'none';
+});
+$('btnAddPhase2Item').addEventListener('click', function() {
+  var current = collectPhase2Payload().items;
+  current.push({name:'', quantity:'', unit:'', specification:''});
+  renderPhase2Items(current);
+});
+$('btnSavePhase2').addEventListener('click', registerPhase2Case);
+$('btnCancelPhase2').addEventListener('click', cancelExtract);
+
+// 初回ロード
+loadCases();
+</script>
+</body>
+</html>
