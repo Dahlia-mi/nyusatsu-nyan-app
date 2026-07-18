@@ -331,6 +331,18 @@
     border-left:3px solid #C58A34; background:#FFF7E8; border-radius:8px;
     padding:8px 10px; font-size:12px; margin-bottom:7px;
   }
+  .understanding-card {
+    background:#F8F5FA; border:1px solid var(--line); border-radius:12px;
+    padding:11px 13px; margin-bottom:12px; font-size:12px;
+  }
+  .understanding-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; }
+  .understanding-value { display:block; margin-top:2px; color:var(--ink); font-weight:700; }
+  .understanding-correction { display:flex; gap:7px; align-items:end; margin-top:10px; }
+  .understanding-correction .form-group { flex:1; margin:0; }
+  .form-group.needs-review { border-left:3px solid #C58A34; background:#FFF9EE; border-radius:8px; padding:7px; }
+  .form-group.needs-review.is-missing { border-left-color:#B94A48; background:#FFF1F1; }
+  .field-reason { color:var(--ink-soft); font-size:11px; margin-top:4px; }
+  .review-shortcuts { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
   .item-editor { border:1px solid var(--line); border-radius:10px; padding:10px; margin-bottom:9px; }
   .item-grid { display:grid; grid-template-columns:1fr 72px 68px; gap:7px; }
   .item-spec { margin-top:7px; }
@@ -494,7 +506,23 @@
   <section class="view" id="view-extract-detail">
     <a href="#" class="back-link" id="btnBackToExtractResult">← 資料の確認へ戻る</a>
     <div class="phase2-intro" id="phase2Intro">資料をまとめて案件カルテを作ったにゃん。未検出や誤りを確認してにゃん🐈</div>
+    <div class="understanding-card" id="documentUnderstandingCard" style="display:none;">
+      <div class="understanding-grid">
+        <div>グループ番号<span class="understanding-value" id="duGroupNumber">—</span></div>
+        <div>判定信頼度<span class="understanding-value" id="duGroupConfidence">—</span></div>
+        <div>公告の対象案件名<span class="understanding-value" id="duScopedTitle">—</span></div>
+      </div>
+      <div class="source-note" id="duGroupSource"></div>
+      <div class="understanding-correction" id="duCorrection" style="display:none;">
+        <div class="form-group">
+          <label class="form-label" for="duGroupInput">グループ番号を確認・修正</label>
+          <input class="form-input" id="duGroupInput" type="number" min="1" max="999" inputmode="numeric">
+        </div>
+        <button class="btn-mini" id="btnApplyGroupNumber" type="button">この番号で再抽出</button>
+      </div>
+    </div>
     <div id="phase2Warnings"></div>
+    <div class="review-shortcuts" id="p2ReviewShortcuts"></div>
 
     <div class="phase2-section">
       <h3>① 案件概要にゃん</h3>
@@ -1068,9 +1096,10 @@ function handlePdfFileSelected(e) {
   });
 }
 
-function proceedToDetail() {
+function proceedToDetail(groupNumber) {
   if (!state.extractSession) return;
-  callApi('api_proceedToDetailExtraction', [state.extractSession], '資料をまとめて案件カルテを作ってるにゃん…', function (data) {
+  if (typeof groupNumber !== 'string' && typeof groupNumber !== 'number') groupNumber = '';
+  callApi('api_proceedToDetailExtraction', [state.extractSession, groupNumber || ''], '資料をまとめて案件カルテを作ってるにゃん…', function (data) {
     renderPhase2Detail(data);
     showView('extract-detail');
   });
@@ -1111,6 +1140,7 @@ function renderPhase2Items(items) {
       '<div class="confidence-note ' + confidenceClass + '">' +
         (confidence ? '抽出信頼度 ' + confidence + '%' : '規格は要確認にゃん') +
       '</div>' +
+      '<div class="field-reason">' + escapeHtml(item.sourceType === '品目等内訳書' ? '品目等内訳書から取得' : '対象資料から推定') + '</div>' +
       '<button class="btn-mini p2-remove-item" type="button">この品目を削除</button>' +
     '</div>';
   }).join('');
@@ -1164,13 +1194,68 @@ function appendConfidenceToLabels(detail) {
     var original = label.getAttribute('data-label-original') || label.textContent.replace(/\s+[🟢🟡🔴⚪].*$/, '');
     label.setAttribute('data-label-original', original);
     label.textContent = original + '　' + confidenceLabel(map[id]);
+    var group = el.closest('.form-group');
+    group.classList.remove('needs-review', 'is-missing');
+    if (Number(map[id] || 0) < 60) {
+      group.classList.add('needs-review');
+      if (!el.value || !el.value.trim()) group.classList.add('is-missing');
+    }
+    var reasonMap = {
+      p2Title:'title', p2Org:'org', p2Qualification:'qualification', p2Category:'category', p2Summary:'summary',
+      p2DeliveryDeadline:'deliveryDeadline', p2DeliveryPlace:'deliveryPlace', p2DeliveryMethod:'deliveryMethod',
+      p2SubmissionDeadline:'submissionDeadline', p2SubmissionMethod:'submissionMethod',
+      p2SubmissionTo:'submissionTo', p2TaxTreatment:'taxTreatment', p2EquivalentStatus:'equivalentProduct'
+    };
+    var oldReason = group.querySelector('.field-reason');
+    if (oldReason) oldReason.remove();
+    var reason = detail.fieldReasons && detail.fieldReasons[reasonMap[id]];
+    if (reason) {
+      var note = document.createElement('div');
+      note.className = 'field-reason';
+      note.textContent = reason;
+      group.appendChild(note);
+    }
+  });
+}
+
+function renderReviewShortcuts(detail) {
+  var fields = [
+    ['p2Title','正式案件名','title'], ['p2DeliveryDeadline','納期','deliveryDeadline'],
+    ['p2SubmissionDeadline','提出期限','submissionDeadline'], ['p2EquivalentStatus','同等品','equivalentProduct']
+  ];
+  var c = detail.confidence || {};
+  var targets = fields.filter(function(row) { return Number(c[row[2]] || 0) < 60; });
+  $('p2ReviewShortcuts').innerHTML = targets.map(function(row) {
+    return '<button class="btn-mini review-jump" type="button" data-target="' + row[0] + '">要確認：' + row[1] + '</button>';
+  }).join('');
+  $('p2ReviewShortcuts').querySelectorAll('.review-jump').forEach(function(button) {
+    button.addEventListener('click', function() {
+      var target = $(button.getAttribute('data-target'));
+      target.scrollIntoView({behavior:'smooth', block:'center'});
+      target.focus();
+    });
   });
 }
 
 function renderPhase2Detail(data) {
   var d = data.detail || data;
+  var previousGroup = state.phase2Detail && state.phase2Detail.documentUnderstanding
+    ? state.phase2Detail.documentUnderstanding.groupNumber : '';
   state.phase2Detail = d;
   $('phase2Intro').textContent = data.message || '案件カルテを作ったにゃん。内容を確認してにゃん🐈';
+
+  var du = d.documentUnderstanding || {};
+  var showUnderstanding = Boolean(du.groupNumber || du.needsGroupConfirmation || (du.warnings && du.warnings.length));
+  $('documentUnderstandingCard').style.display = showUnderstanding ? '' : 'none';
+  $('duGroupNumber').textContent = du.groupNumber || '未確定';
+  $('duGroupConfidence').textContent = du.groupNumber ? Number(du.groupNumberConfidence || 0) + '%' : '—';
+  $('duScopedTitle').textContent = du.scopedTitle || '未特定';
+  $('duGroupSource').textContent = du.groupNumberSource ? '判定元：' + du.groupNumberSource : '';
+  $('duCorrection').style.display = du.needsGroupConfirmation ? '' : 'none';
+  if (du.needsGroupConfirmation) {
+    $('duGroupInput').value = '';
+    $('duGroupInput').placeholder = (du.groupNumberCandidates || []).join(' / ');
+  }
 
   $('p2Title').value = valueOfField(d.basic && d.basic.title);
   $('p2Org').value = valueOfField(d.basic && d.basic.org);
@@ -1219,9 +1304,13 @@ function renderPhase2Detail(data) {
   appendConfidenceToLabels(d);
 
   var warnings = d.warnings || [];
+  if (previousGroup && du.groupNumber && previousGroup !== du.groupNumber) {
+    warnings = ['グループ番号を ' + previousGroup + ' から ' + du.groupNumber + ' へ修正して再抽出しました。'].concat(warnings);
+  }
   $('phase2Warnings').innerHTML = warnings.map(function(w) {
     return '<div class="phase2-warning">⚠️ ' + escapeHtml(w) + '</div>';
   }).join('');
+  renderReviewShortcuts(d);
 }
 
 function collectPhase2Payload() {
@@ -1281,8 +1370,19 @@ function collectPhase2Payload() {
     tags: $('p2Tags').value.split(',').map(function(x){return x.trim();}).filter(Boolean),
     confidence: d.confidence || {},
     warnings: d.warnings || [],
-    documents: d.documents || state.extractDocuments || []
+    documents: d.documents || state.extractDocuments || [],
+    documentUnderstanding: d.documentUnderstanding || {},
+    fieldReasons: d.fieldReasons || {}
   };
+}
+
+function applyCorrectedGroupNumber() {
+  var value = $('duGroupInput').value.trim();
+  if (!/^\d{1,3}$/.test(value) || Number(value) < 1) {
+    showError('正しいグループ番号を入力してにゃん。');
+    return;
+  }
+  proceedToDetail(value);
 }
 
 function registerPhase2Case() {
@@ -1338,6 +1438,7 @@ $('extractFileInput').addEventListener('change', handlePdfFileSelected);
 $('extractAddFileInput').addEventListener('change', handleAdditionalPdfSelected);
 $('btnAddDocument').addEventListener('click', selectAdditionalDocument);
 $('btnProceedDetail').addEventListener('click', proceedToDetail);
+$('btnApplyGroupNumber').addEventListener('click', applyCorrectedGroupNumber);
 $('btnCancelExtract').addEventListener('click', cancelExtract);
 $('btnBackFromProceed').addEventListener('click', function (e) {
   e.preventDefault();
