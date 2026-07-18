@@ -25,7 +25,7 @@
  * =====================================================================
  */
 
-const NYAN_VERSION = "0.9.0";
+const NYAN_VERSION = "0.9.1";
 
 
 /* =====================================================================
@@ -364,6 +364,11 @@ function registerCaseJsonToProject_(caseJson, sourceOverride, assetMeta) {
     result.folderId = data.source.folderId;
     result.folderUrl = data.source.folderUrl;
     result.savedFiles = saved.savedFiles;
+
+    // v0.9.1: 案件マスターを壊さず、Webアプリの正本「01_案件管理」へ同期する。
+    // 新規登録・既存マージのどちらでも案件IDでupsertするため、二重行を作らない。
+    result.caseManagement = syncCaseJsonToCaseManagement_(data, result);
+
     return { caseJson: data, payload: payload, registration: result };
   } catch (e) {
     if (result.isNew) rollbackNewProject_(result.projectId, payload.source, payload.sourceId, result.folderId);
@@ -371,9 +376,179 @@ function registerCaseJsonToProject_(caseJson, sourceOverride, assetMeta) {
   }
 }
 
+
+/**
+ * [v0.9.1] 案件JSONを「01_案件管理」へ安全に同期する。
+ *
+ * 方針:
+ *  - 既存の「案件マスター」は重複判定・採番の土台として残す。
+ *  - 「01_案件管理」はWebアプリ・見積生成が読む実運用シートとして扱う。
+ *  - 列番号は固定せず、1行目の見出し名で解決する。
+ *  - 既存の見出しやデータは上書きしない。存在する列だけ更新する。
+ *  - 案件IDが既にあれば更新、なければ新規行を追加する（upsert）。
+ */
+function syncCaseJsonToCaseManagement_(caseJson, registration) {
+  const data = normalizeCaseJson_(caseJson);
+  if (!data.caseId) throw new Error('01_案件管理同期: 案件IDが空です');
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(NYAN_SHEETS.CASE_MANAGEMENT);
+  if (!sheet) {
+    throw new Error('「' + NYAN_SHEETS.CASE_MANAGEMENT + '」シートが見つかりません');
+  }
+  if (sheet.getLastColumn() < 1) {
+    throw new Error('「' + NYAN_SHEETS.CASE_MANAGEMENT + '」の見出し行がありません');
+  }
+
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const headerMap = {};
+  headers.forEach(function(value, index) {
+    const name = String(value || '').trim();
+    if (name) headerMap[name] = index + 1;
+  });
+
+  const idCol = headerMap['案件ID'];
+  if (!idCol) throw new Error('01_案件管理に「案件ID」列が見つかりません');
+
+  let targetRow = 0;
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    const ids = sheet.getRange(2, idCol, lastRow - 1, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0] || '').trim() === data.caseId) {
+        targetRow = i + 2;
+        break;
+      }
+    }
+  }
+  const isNewRow = !targetRow;
+  if (isNewRow) targetRow = Math.max(2, lastRow + 1);
+
+  const item = Array.isArray(data.items) && data.items.length ? data.items[0] : {};
+  const folderUrl = String(data.source.folderUrl || (registration && registration.folderUrl) || '').trim();
+  let originalUrl = '';
+  if (data.source.originalFileId) {
+    try { originalUrl = DriveApp.getFileById(data.source.originalFileId).getUrl(); } catch (ignore) {}
+  }
+
+  const valuesByHeader = {
+    '案件ID': data.caseId,
+    '案件名': data.title,
+    '件名': data.title,
+    '発注機関': data.agency,
+    '案件カテゴリ': data.category,
+    'カテゴリ': data.category,
+    '参加資格': data.qualification,
+    '提出期限': data.submission.deadline,
+    '締切日': data.submission.deadline,
+    '納品期限': data.delivery.date,
+    '納期': data.delivery.date,
+    '納品場所': data.delivery.place,
+    '納品方法': data.delivery.method,
+    '提出方法': data.submission.method,
+    '提出先': data.submission.destination,
+    '提出先・宛名': data.submission.destination,
+    '提出メール': data.submission.email,
+    'メール': data.submission.email,
+    '品目': item.name || '',
+    '数量': item.quantity == null ? '' : item.quantity,
+    '単位': item.unit || '',
+    '仕様': item.specification || '',
+    '規格': item.specification || '',
+    '案件概要': data.summary,
+    '概要': data.summary,
+    'ステータス': isNewRow ? '新規' : undefined,
+    '主取得元': 'OCR',
+    '案件フォルダ': folderUrl,
+    '案件フォルダURL': folderUrl,
+    'フォルダURL': folderUrl,
+    '元資料': originalUrl,
+    '元資料URL': originalUrl,
+    '登録日時': isNewRow ? new Date() : undefined,
+    '更新日時': new Date()
+  };
+
+  Object.keys(valuesByHeader).forEach(function(header) {
+    const col = headerMap[header];
+    const value = valuesByHeader[header];
+    if (!col || value === undefined) return;
+    sheet.getRange(targetRow, col).setValue(value);
+  });
+
+  return {
+    sheetName: NYAN_SHEETS.CASE_MANAGEMENT,
+    row: targetRow,
+    isNewRow: isNewRow,
+    caseId: data.caseId
+  };
+}
+
+/**
+ * 既に案件マスターへ登録済みの案件を、案件ID指定で01_案件管理へ移すための補助関数。
+ * 例: syncExistingCaseToCaseManagement('2026-07-003')
+ */
+/** 既存の記念案件 2026-07-003 をワンタップ同期する。 */
+function syncCase202607003ToCaseManagement() {
+  return syncExistingCaseToCaseManagement('2026-07-003');
+}
+
+function syncExistingCaseToCaseManagement(caseId) {
+  const target = String(caseId || '').trim();
+  if (!target) throw new Error('案件IDを指定してください');
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const projectSheet = ss.getSheetByName(NYAN_SHEETS.PROJECT);
+  if (!projectSheet) throw new Error('「' + NYAN_SHEETS.PROJECT + '」が見つかりません');
+
+  const lastRow = projectSheet.getLastRow();
+  if (lastRow < 2) throw new Error('案件マスターにデータがありません');
+  const values = projectSheet.getRange(2, 1, lastRow - 1, PROJECT_HEADERS.length).getValues();
+  let row = null;
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][P.ID - 1] || '').trim() === target) {
+      row = values[i];
+      break;
+    }
+  }
+  if (!row) throw new Error('案件マスターに案件ID「' + target + '」が見つかりません');
+
+  // 保存済みcase.jsonがあればそれを正本として使用する。
+  let caseJson = null;
+  try {
+    const root = getProjectRootFolder_();
+    const folders = root.getFoldersByName(target);
+    if (folders.hasNext()) {
+      const projectFolder = folders.next();
+      const jsonFolders = projectFolder.getFoldersByName('03_JSON');
+      if (jsonFolders.hasNext()) {
+        const files = jsonFolders.next().getFilesByName('case.json');
+        if (files.hasNext()) caseJson = JSON.parse(files.next().getBlob().getDataAsString('UTF-8'));
+      }
+    }
+  } catch (e) {
+    Logger.log('case.json読込を省略: ' + e.message);
+  }
+
+  if (!caseJson) {
+    caseJson = normalizeCaseJson_({
+      caseId: target,
+      title: row[P.TITLE - 1],
+      agency: row[P.AGENCY - 1],
+      submission: { deadline: row[P.DEADLINE - 1] },
+      source: {}
+    });
+  }
+  caseJson.caseId = target;
+
+  const result = syncCaseJsonToCaseManagement_(caseJson, {});
+  Logger.log(JSON.stringify(result, null, 2));
+  SpreadsheetApp.getActive().toast(target + ' を01_案件管理へ同期したにゃん 🐈', '同期完了', 5);
+  return result;
+}
+
 /**
  * OCR側から呼ぶ正式な接続入口。
- * OCR抽出結果 → 固定JSON → 案件マスター登録までを一括実行する。
+ * OCR抽出結果 → 固定JSON → 案件マスター登録 → 01_案件管理同期までを一括実行する。
  */
 function processOcrResultToProject_(ocrResult, fileMeta) {
   fileMeta = fileMeta || {};
@@ -466,6 +641,7 @@ function testCaseAssetPersistence() {
 // ===== シート名 =====
 const NYAN_SHEETS = {
   PROJECT:      '案件マスター',
+  CASE_MANAGEMENT: '01_案件管理', // 実運用・Webアプリ表示用。案件マスターから安全に同期する
   SOURCE_LINK:  '取得元リンク',
   SOURCE_MASTER:'情報源マスター',
   SUPPLIER:     '仕入先DB',

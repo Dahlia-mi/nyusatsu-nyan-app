@@ -1,0 +1,1994 @@
+/**
+ * ============================================================
+ * nyusatsu-nyan-extract-v2.3-register-v0.9.0.gs（正式登録統合）
+ * ------------------------------------------------------------
+ * 改善点
+ *  1. PDF種別（公告・仕様書・見積依頼書・不明）を推定
+ *  2. 「見出し直後を切り出すだけ」から、項目別の抽出ロジックへ変更
+ *  3. 納期は日付・期限表現を優先し、注意書きの誤取得を抑制
+ *  4. 発注元は官署名・担当官名を優先し、条文中の「発注者」を除外
+ *  5. 参加資格は全文を返さず、資格種別・主要条件を短く要約
+ *  6. OCRテキストを正規化し、改行・全角空白・連続空白の揺れに対応
+ *  7. 一時セッションに「資料種別」「抽出信頼度」を保存
+ *  8. 1案件へ公告・仕様書・別紙など複数PDFを追加可能
+ *  9. 追加PDFだけOCRし、Phase1の3項目を資料横断で再選定
+ *
+ * 既存API名は維持
+ *  - api_extractKey3
+ *  - api_proceedToDetailExtraction
+ *  - api_cancelExtractSession
+ * ============================================================
+ */
+
+const EXTRACT_SESSION_SHEET_NAME = '一時抽出セッション';
+const EXTRACT_DOCUMENT_SHEET_NAME = '一時抽出資料';
+const EXTRACT_TEMP_FOLDER_NAME = '入札にゃんOS_一時PDF';
+const EXTRACT_SESSION_HEADERS = [
+  'セッションID', '作成日時', 'ステータス', '元ファイル名',
+  'PDFファイルID', 'OCR DocID', '資料種別',
+  '抽出_参加資格', '抽出_納期', '抽出_発注元',
+  '信頼度_参加資格', '信頼度_納期', '信頼度_発注元',
+  'Phase2_JSONファイルID', 'Phase2更新日時', '備考',
+];
+
+const EXTRACT_DOCUMENT_HEADERS = [
+  '資料ID', 'セッションID', '追加日時', 'ステータス',
+  '元ファイル名', 'PDFファイルID', 'OCR DocID', '資料種別',
+  '資料種別信頼度', 'OCR文字数', '備考',
+];
+
+// ── シート・フォルダ準備 ─────────────────────────────
+
+function getOrCreateExtractSessionSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(EXTRACT_SESSION_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(EXTRACT_SESSION_SHEET_NAME);
+  }
+
+  const currentLastCol = Math.max(sheet.getLastColumn(), 1);
+  const currentHeaders = sheet.getRange(1, 1, 1, currentLastCol).getValues()[0]
+    .map(v => String(v || '').trim());
+
+  EXTRACT_SESSION_HEADERS.forEach(header => {
+    if (!currentHeaders.includes(header)) {
+      sheet.getRange(1, sheet.getLastColumn() + 1).setValue(header);
+      currentHeaders.push(header);
+    }
+  });
+
+  sheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, sheet.getLastColumn())
+    .setBackground('#2c2438')
+    .setFontColor('#ede0e8')
+    .setFontWeight('bold');
+
+  return sheet;
+}
+
+
+function getOrCreateExtractDocumentSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(EXTRACT_DOCUMENT_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(EXTRACT_DOCUMENT_SHEET_NAME);
+
+  const currentLastCol = Math.max(sheet.getLastColumn(), 1);
+  const currentHeaders = sheet.getRange(1, 1, 1, currentLastCol).getValues()[0]
+    .map(v => String(v || '').trim());
+
+  EXTRACT_DOCUMENT_HEADERS.forEach(header => {
+    if (!currentHeaders.includes(header)) {
+      sheet.getRange(1, sheet.getLastColumn() + 1).setValue(header);
+      currentHeaders.push(header);
+    }
+  });
+
+  sheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, sheet.getLastColumn())
+    .setBackground('#2c2438')
+    .setFontColor('#ede0e8')
+    .setFontWeight('bold');
+  return sheet;
+}
+
+function getOrCreateTempFolder_() {
+  const folders = DriveApp.getFoldersByName(EXTRACT_TEMP_FOLDER_NAME);
+  if (folders.hasNext()) return folders.next();
+  return DriveApp.createFolder(EXTRACT_TEMP_FOLDER_NAME);
+}
+
+function getExtractHeaderMap_(sheet) {
+  const lastCol = sheet.getLastColumn();
+  const headerRow = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h).trim());
+  const map = {};
+  headerRow.forEach((h, idx) => { if (h) map[h] = idx + 1; });
+  return map;
+}
+
+function findExtractSessionRow_(sheet, sessionId) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+  const headerMap = getExtractHeaderMap_(sheet);
+  const idCol = headerMap['セッションID'];
+  if (!idCol) return null;
+
+  const ids = sheet.getRange(2, idCol, lastRow - 1, 1).getValues();
+  for (let i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]).trim() === sessionId) {
+      const row = i + 2;
+      const rowValues = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+      return { row, headerMap, rowValues };
+    }
+  }
+  return null;
+}
+
+function trashFileIfExists_(fileId) {
+  if (!fileId) return;
+  try {
+    const file = DriveApp.getFileById(fileId);
+    if (!file.isTrashed()) file.setTrashed(true);
+  } catch (e) {
+    Logger.log('trashFileIfExists_: ' + fileId + ' / ' + e.message);
+  }
+}
+
+
+function appendRowByHeaders_(sheet, data) {
+  const headerMap = getExtractHeaderMap_(sheet);
+  const row = new Array(sheet.getLastColumn()).fill('');
+  Object.keys(data).forEach(header => {
+    if (headerMap[header]) row[headerMap[header] - 1] = data[header];
+  });
+  sheet.appendRow(row);
+}
+
+function getExtractDocuments_(sessionId, includeOcrText) {
+  const sheet = getOrCreateExtractDocumentSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  const map = getExtractHeaderMap_(sheet);
+  const values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  const docs = [];
+
+  values.forEach((row, index) => {
+    if (String(row[map['セッションID'] - 1]).trim() !== sessionId) return;
+    if (String(row[map['ステータス'] - 1]).trim() === 'cancelled') return;
+
+    const doc = {
+      row: index + 2,
+      documentId: String(row[map['資料ID'] - 1] || ''),
+      sessionId: sessionId,
+      fileName: String(row[map['元ファイル名'] - 1] || ''),
+      pdfFileId: String(row[map['PDFファイルID'] - 1] || ''),
+      ocrDocId: String(row[map['OCR DocID'] - 1] || ''),
+      documentType: String(row[map['資料種別'] - 1] || '不明'),
+      documentTypeConfidence: Number(row[map['資料種別信頼度'] - 1] || 0),
+      ocrChars: Number(row[map['OCR文字数'] - 1] || 0),
+      status: String(row[map['ステータス'] - 1] || ''),
+    };
+
+    if (includeOcrText && doc.ocrDocId) {
+      try {
+        doc.ocrText = DocumentApp.openById(doc.ocrDocId).getBody().getText();
+      } catch (e) {
+        doc.ocrText = '';
+        doc.readError = e.message;
+      }
+    }
+    docs.push(doc);
+  });
+  return docs;
+}
+
+function publicDocumentList_(docs) {
+  return (docs || []).map(doc => ({
+    documentId: doc.documentId,
+    fileName: doc.fileName,
+    documentType: doc.documentType || '不明',
+    documentTypeConfidence: Number(doc.documentTypeConfidence || 0),
+    ocrChars: Number(doc.ocrChars || 0),
+    status: doc.status || 'ocr_saved',
+  }));
+}
+
+// ── OCRテキスト整形 ───────────────────────────────────
+
+function normalizeOcrText_(text) {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u00A0\u3000]/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function toSingleLine_(text) {
+  return String(text || '')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s:：,，、。・\-]+/, '')
+    .trim();
+}
+
+function truncate_(text, maxChars) {
+  const s = toSingleLine_(text);
+  return s.length > maxChars ? s.slice(0, maxChars) + '…' : s;
+}
+
+function getLines_(text) {
+  return normalizeOcrText_(text)
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+}
+
+// ── 資料種別判定 ─────────────────────────────────────
+
+function detectDocumentType_(text, fileName) {
+  const src = (String(fileName || '') + '\n' + text).toLowerCase();
+  const scores = {
+    '公告': 0,
+    '仕様書': 0,
+    '見積依頼書': 0,
+    '不明': 0,
+  };
+
+  if (/入札公告|公告第|一般競争入札|オープンカウンター方式による見積/.test(src)) scores['公告'] += 4;
+  if (/競争参加資格|入札参加資格|見積り合わせに参加/.test(src)) scores['公告'] += 2;
+  if (/仕様書|仕様\s*$|納入仕様|業務仕様/.test(src)) scores['仕様書'] += 4;
+  if (/品名|規格|数量|納入場所|検査|同等品/.test(src)) scores['仕様書'] += 2;
+  if (/見積依頼書|見積書提出期限|見積合わせ|見積り合わせ/.test(src)) scores['見積依頼書'] += 4;
+
+  let bestType = '不明';
+  let bestScore = 0;
+  Object.keys(scores).forEach(type => {
+    if (scores[type] > bestScore) {
+      bestType = type;
+      bestScore = scores[type];
+    }
+  });
+
+  return { type: bestType, confidence: Math.min(100, bestScore * 20) };
+}
+
+// ── 汎用ブロック抽出 ─────────────────────────────────
+
+function extractBlockAfterLabels_(text, labels, maxLines, maxChars) {
+  const lines = getLines_(text);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const label = labels.find(l => line.indexOf(l) !== -1);
+    if (!label) continue;
+
+    const inline = line.slice(line.indexOf(label) + label.length)
+      .replace(/^[\s:：,，、。・\-]+/, '')
+      .trim();
+
+    const picked = [];
+    if (inline) picked.push(inline);
+
+    for (let j = i + 1; j < Math.min(lines.length, i + 1 + maxLines); j++) {
+      const next = lines[j];
+      if (/^(参加資格|競争参加資格|納期|納入期限|履行期限|発注者|発注元|契約担当者|問い合わせ先|提出期限|納入場所|仕様|数量)[\s:：]/.test(next)) break;
+      picked.push(next);
+      if (picked.join(' ').length >= maxChars) break;
+    }
+
+    const result = truncate_(picked.join(' '), maxChars);
+    if (result) return result;
+  }
+  return '';
+}
+
+// ── 納期抽出 ─────────────────────────────────────────
+
+function normalizeJapaneseDate_(raw) {
+  return toSingleLine_(raw)
+    .replace(/令和\s*([0-9０-９]+)\s*年\s*([0-9０-９]+)\s*月\s*([0-9０-９]+)\s*日/g, '令和$1年$2月$3日')
+    .replace(/([0-9０-９]+)\s*年\s*([0-9０-９]+)\s*月\s*([0-9０-９]+)\s*日/g, '$1年$2月$3日');
+}
+
+function extractDeadline_(text) {
+  const lines = getLines_(text);
+  const labels = ['納期', '納入期限', '履行期限', '契約期間', '納入期日', '完了期限'];
+  const datePatterns = [
+    /令和\s*[0-9０-９]+\s*年\s*[0-9０-９]+\s*月\s*[0-9０-９]+\s*日(?:\s*まで|\s*限り|\s*とする)?/,
+    /[0-9０-９]{4}\s*年\s*[0-9０-９]+\s*月\s*[0-9０-９]+\s*日(?:\s*まで|\s*限り|\s*とする)?/,
+    /[0-9０-９]{1,2}\s*月\s*[0-9０-９]{1,2}\s*日(?:\s*まで|\s*限り|\s*とする)?/,
+    /契約締結(?:日|後)から[^。\n]{0,40}/,
+  ];
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!labels.some(label => lines[i].indexOf(label) !== -1)) continue;
+
+    const local = [lines[i], lines[i + 1] || '', lines[i + 2] || ''].join(' ');
+    for (let p = 0; p < datePatterns.length; p++) {
+      const match = local.match(datePatterns[p]);
+      if (match) {
+        return { value: normalizeJapaneseDate_(match[0]), confidence: 95 };
+      }
+    }
+
+    const afterLabel = extractBlockAfterLabels_(lines.slice(i).join('\n'), labels, 2, 80);
+    if (afterLabel && !/遅れ|損害|協議|暴力団|不当介入/.test(afterLabel)) {
+      return { value: afterLabel, confidence: 65 };
+    }
+  }
+
+  // ラベルなしでも「までとする」等の明確な日付を拾う
+  for (let p = 0; p < datePatterns.length; p++) {
+    const match = text.match(datePatterns[p]);
+    if (match && /まで|期限|納入|履行/.test(match[0] + text.slice(Math.max(0, match.index - 20), match.index + match[0].length + 20))) {
+      return { value: normalizeJapaneseDate_(match[0]), confidence: 70 };
+    }
+  }
+
+  return { value: '', confidence: 0 };
+}
+
+// ── 発注元抽出 ───────────────────────────────────────
+
+function cleanOrganization_(value) {
+  return truncate_(String(value || '')
+    .replace(/^(発注者|発注元|契約担当者|支出負担行為担当官|分任支出負担行為担当官|担当官)[\s:：]*/, '')
+    .replace(/\s+(オープンカウンター方式|入札公告|公告|仕様書|見積り合わせ).*$/, ''), 100);
+}
+
+function extractOrganization_(text) {
+  const lines = getLines_(text);
+  const directLabels = ['発注元', '発注機関', '契約担当者', '支出負担行為担当官', '分任支出負担行為担当官'];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const label = directLabels.find(l => line.indexOf(l) !== -1);
+    if (!label) continue;
+
+    let candidate = line.slice(line.indexOf(label) + label.length).replace(/^[\s:：]+/, '').trim();
+    if (!candidate && lines[i + 1]) candidate = lines[i + 1];
+    candidate = cleanOrganization_(candidate);
+
+    if (candidate && !/暴力団|不当介入|協議|受けた場合/.test(candidate)) {
+      return { value: candidate, confidence: 95 };
+    }
+  }
+
+  // 官署名＋長/官/所長/局長などを優先
+  const organizationPatterns = [
+    /(?:国土交通省\s*)?[一-龠々ヶ・\s]{2,40}(?:地方整備局|地方運輸局|防衛局|駐屯地|基地|庁|省|県|市|町|村|事務所)(?:長|局長|所長|課長|契約担当官|分任支出負担行為担当官)?(?:\s+[一-龠々ァ-ヶー]{2,15})?/,
+    /(?:分任)?支出負担行為担当官\s+[一-龠々ヶ・\s]{2,50}/,
+  ];
+
+  for (let p = 0; p < organizationPatterns.length; p++) {
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(organizationPatterns[p]);
+      if (!m) continue;
+      const candidate = cleanOrganization_(m[0]);
+      if (candidate && !/暴力団|不当介入|契約において/.test(candidate)) {
+        return { value: candidate, confidence: 80 };
+      }
+    }
+  }
+
+  return { value: '', confidence: 0 };
+}
+
+// ── 参加資格抽出・要約 ───────────────────────────────
+
+function summarizeQualification_(text) {
+  const lines = getLines_(text);
+  const full = lines.join(' ');
+  const items = [];
+
+  const unifiedMatch = full.match(/全省庁統一資格[^。\n]{0,80}|競争参加資格[^。\n]{0,80}|入札参加資格[^。\n]{0,80}/);
+  if (unifiedMatch && !/有していない|必要としない/.test(unifiedMatch[0])) {
+    items.push(truncate_(unifiedMatch[0], 90));
+  }
+
+  if (/指名停止[^。\n]{0,50}(受けていない|期間中でない|措置を受けていない)/.test(full)) {
+    items.push('指名停止期間中でないこと');
+  }
+  if (/暴力団[^。\n]{0,80}(該当しない|関係者でない|排除要請)/.test(full)) {
+    items.push('暴力団等の排除要件を満たすこと');
+  }
+  if (/(会社更生法|民事再生法)[^。\n]{0,120}(申立てがなされていない|手続開始の申立てがされていない)/.test(full)) {
+    items.push('会社更生・民事再生の手続開始申立てがないこと');
+  }
+  if (/予算決算及び会計令[^。\n]{0,100}(第70条|第７０条)/.test(full)) {
+    items.push('予決令70条・71条に該当しないこと');
+  }
+
+  // 資格等級・地域・品目の記載がある場合
+  const rankMatch = full.match(/(?:資格|等級)[^。\n]{0,50}(?:A|Ｂ|B|Ｃ|C|Ｄ|D)[^。\n]{0,40}/i);
+  if (rankMatch) items.push(truncate_(rankMatch[0], 80));
+
+  const unique = [];
+  items.forEach(item => {
+    const normalized = toSingleLine_(item);
+    if (normalized && !unique.includes(normalized)) unique.push(normalized);
+  });
+
+  if (unique.length) {
+    return { value: unique.slice(0, 4).join('／'), confidence: unique.length >= 2 ? 90 : 75 };
+  }
+
+  const raw = extractBlockAfterLabels_(text, ['参加資格', '入札参加資格', '競争参加資格'], 8, 260);
+  if (raw) return { value: raw, confidence: 55 };
+
+  return { value: '', confidence: 0 };
+}
+
+function extractKey3_(docText, fileName) {
+  const normalized = normalizeOcrText_(docText);
+  const docType = detectDocumentType_(normalized, fileName);
+  const qualification = summarizeQualification_(normalized);
+  const deadline = extractDeadline_(normalized);
+  const org = extractOrganization_(normalized);
+
+  return {
+    documentType: docType.type,
+    documentTypeConfidence: docType.confidence,
+    qualification: qualification.value,
+    qualificationConfidence: qualification.confidence,
+    deadline: deadline.value,
+    deadlineConfidence: deadline.confidence,
+    org: org.value,
+    orgConfidence: org.confidence,
+  };
+}
+
+
+
+// ── Phase2.1A：Drive APIの一時エラー対策 ─────────────
+
+function isRetryableDriveError_(e) {
+  const msg = String(e && e.message ? e.message : e || '');
+  return /User rate limit exceeded|Rate Limit|rateLimitExceeded|429|500|502|503|backendError|Service invoked too many times|internal error/i.test(msg);
+}
+
+function withRetry_(fn, label, maxAttempts) {
+  const attempts = Number(maxAttempts || 4);
+  let lastError = null;
+
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return fn();
+    } catch (e) {
+      lastError = e;
+      if (!isRetryableDriveError_(e) || i === attempts - 1) throw e;
+
+      const waitMs = Math.pow(2, i) * 1000;
+      Logger.log((label || 'Drive処理') + ' retry ' + (i + 1) + '/' + attempts + ': ' + e.message);
+      Utilities.sleep(waitMs);
+    }
+  }
+  throw lastError;
+}
+
+function readOcrDocTextWithRetry_(ocrDocId) {
+  return withRetry_(function() {
+    return DocumentApp.openById(ocrDocId).getBody().getText();
+  }, 'OCR結果読み込み', 4);
+}
+
+function processExtractDocument_(base64Data, fileName, mimeType, sessionId) {
+  if (!base64Data) throw new Error('PDFデータが空にゃん。');
+
+  const folder = getOrCreateTempFolder_();
+  const decoded = Utilities.base64Decode(base64Data);
+  const safeFileName = fileName || 'upload.pdf';
+  const blob = Utilities.newBlob(decoded, mimeType || 'application/pdf', safeFileName);
+  const pdfFile = folder.createFile(blob);
+  const pdfFileId = pdfFile.getId();
+
+  let ocrDocId = '';
+  try {
+    const resource = {
+      name: safeFileName + '_OCR',
+      mimeType: MimeType.GOOGLE_DOCS,
+      parents: [folder.getId()],
+    };
+    const converted = withRetry_(function() {
+      return Drive.Files.create(resource, blob, {
+        fields: 'id',
+        ocrLanguage: 'ja',
+      });
+    }, 'OCR変換', 4);
+    ocrDocId = converted.id;
+  } catch (e) {
+    trashFileIfExists_(pdfFileId);
+    throw new Error('OCR変換に失敗したにゃん：' + e.message +
+      '（Apps Scriptの「サービス」でDrive API v3を確認してにゃん）');
+  }
+
+  let docText = '';
+  try {
+    docText = readOcrDocTextWithRetry_(ocrDocId);
+  } catch (e) {
+    trashFileIfExists_(pdfFileId);
+    trashFileIfExists_(ocrDocId);
+    throw new Error('OCR結果の読み込みに失敗したにゃん：' + e.message);
+  }
+
+  const extracted = extractKey3_(docText, safeFileName);
+  const documentId = Utilities.getUuid();
+  const docSheet = getOrCreateExtractDocumentSheet_();
+  appendRowByHeaders_(docSheet, {
+    '資料ID': documentId,
+    'セッションID': sessionId,
+    '追加日時': new Date(),
+    'ステータス': 'ocr_saved',
+    '元ファイル名': safeFileName,
+    'PDFファイルID': pdfFileId,
+    'OCR DocID': ocrDocId,
+    '資料種別': extracted.documentType,
+    '資料種別信頼度': extracted.documentTypeConfidence,
+    'OCR文字数': docText.length,
+    '備考': '',
+  });
+
+  return {
+    documentId: documentId,
+    sessionId: sessionId,
+    fileName: safeFileName,
+    pdfFileId: pdfFileId,
+    ocrDocId: ocrDocId,
+    ocrText: docText,
+    ocrChars: docText.length,
+    documentType: extracted.documentType,
+    documentTypeConfidence: extracted.documentTypeConfidence,
+    extracted: extracted,
+    status: 'ocr_saved',
+  };
+}
+
+function pickBestExtractValue_(candidates, fieldName) {
+  const typeBonus = {
+    qualification: { '公告': 30, '見積依頼書': 25, '仕様書': 0, '不明': 0 },
+    deadline:      { '仕様書': 30, '公告': 20, '見積依頼書': 15, '不明': 0 },
+    org:           { '公告': 30, '見積依頼書': 20, '仕様書': 5, '不明': 0 },
+  };
+
+  let best = { value: '', confidence: 0, score: -1, documentId: '', sourceType: '', sourceFileName: '' };
+  candidates.forEach(c => {
+    const value = c.extracted[fieldName] || '';
+    if (!value) return;
+    const confidence = Number(c.extracted[fieldName + 'Confidence'] || 0);
+    const score = confidence + Number((typeBonus[fieldName] || {})[c.documentType] || 0);
+    if (score > best.score) {
+      best = {
+        value: value,
+        confidence: confidence,
+        score: score,
+        documentId: c.documentId,
+        sourceType: c.documentType,
+        sourceFileName: c.fileName,
+      };
+    }
+  });
+  return best;
+}
+
+function mergeKey3ForSession_(sessionId) {
+  const docs = getExtractDocuments_(sessionId, true);
+  const candidates = docs.map(doc => ({
+    documentId: doc.documentId,
+    fileName: doc.fileName,
+    documentType: doc.documentType,
+    extracted: extractKey3_(doc.ocrText || '', doc.fileName || ''),
+  }));
+
+  return {
+    qualification: pickBestExtractValue_(candidates, 'qualification'),
+    deadline: pickBestExtractValue_(candidates, 'deadline'),
+    org: pickBestExtractValue_(candidates, 'org'),
+    documents: docs,
+  };
+}
+
+function updateExtractSessionSummary_(sessionId, merged) {
+  const sheet = getOrCreateExtractSessionSheet_();
+  const found = findExtractSessionRow_(sheet, sessionId);
+  if (!found) throw new Error('セッションが見つからないにゃん。');
+  const m = found.headerMap;
+
+  sheet.getRange(found.row, m['抽出_参加資格']).setValue(merged.qualification.value || '');
+  sheet.getRange(found.row, m['抽出_納期']).setValue(merged.deadline.value || '');
+  sheet.getRange(found.row, m['抽出_発注元']).setValue(merged.org.value || '');
+  sheet.getRange(found.row, m['信頼度_参加資格']).setValue(merged.qualification.confidence || 0);
+  sheet.getRange(found.row, m['信頼度_納期']).setValue(merged.deadline.confidence || 0);
+  sheet.getRange(found.row, m['信頼度_発注元']).setValue(merged.org.confidence || 0);
+  sheet.getRange(found.row, m['備考']).setValue(
+    '資料数=' + merged.documents.length +
+    ' / 資格出典=' + (merged.qualification.sourceType || '未検出') +
+    ' / 納期出典=' + (merged.deadline.sourceType || '未検出') +
+    ' / 発注元出典=' + (merged.org.sourceType || '未検出')
+  );
+}
+
+function buildSessionApiData_(sessionId, merged) {
+  return {
+    sessionId: sessionId,
+    qualification: merged.qualification.value || '（未検出・推定できず）',
+    qualificationConfidence: merged.qualification.confidence || 0,
+    qualificationSource: merged.qualification.sourceType || '',
+    deadline: merged.deadline.value || '（未検出・推定できず）',
+    deadlineConfidence: merged.deadline.confidence || 0,
+    deadlineSource: merged.deadline.sourceType || '',
+    org: merged.org.value || '（未検出・推定できず）',
+    orgConfidence: merged.org.confidence || 0,
+    orgSource: merged.org.sourceType || '',
+    documents: publicDocumentList_(merged.documents),
+  };
+}
+
+// ── API①：最初のPDFアップロード→Phase1抽出 ─────────────
+
+function api_extractKey3(base64Data, fileName, mimeType) {
+  const sessionId = Utilities.getUuid();
+  try {
+    const sessionSheet = getOrCreateExtractSessionSheet_();
+    appendRowByHeaders_(sessionSheet, {
+      'セッションID': sessionId,
+      '作成日時': new Date(),
+      'ステータス': 'pending_review',
+      '元ファイル名': fileName || '',
+      '備考': '最初の資料を処理中',
+    });
+
+    const firstDoc = processExtractDocument_(base64Data, fileName, mimeType, sessionId);
+
+    // 既存列との後方互換用に最初の資料IDをセッション側にも残す
+    const found = findExtractSessionRow_(sessionSheet, sessionId);
+    if (found) {
+      sessionSheet.getRange(found.row, found.headerMap['PDFファイルID']).setValue(firstDoc.pdfFileId);
+      sessionSheet.getRange(found.row, found.headerMap['OCR DocID']).setValue(firstDoc.ocrDocId);
+      sessionSheet.getRange(found.row, found.headerMap['資料種別']).setValue(firstDoc.documentType);
+    }
+
+    const merged = mergeKey3ForSession_(sessionId);
+    updateExtractSessionSummary_(sessionId, merged);
+    const data = buildSessionApiData_(sessionId, merged);
+    data.documentType = firstDoc.documentType;
+    data.documentTypeConfidence = firstDoc.documentTypeConfidence;
+    data.hint = firstDoc.documentType === '仕様書'
+      ? '仕様書では参加資格が載っていないことがあるにゃん。公告も追加するともっと正確に見られるにゃん。'
+      : '仕様書や別紙も追加すると、詳細抽出の精度が上がるにゃん。';
+    return apiOk_(data);
+  } catch (e) {
+    Logger.log('api_extractKey3 error: ' + e.stack);
+    try { api_cancelExtractSession(sessionId); } catch (ignore) {}
+    return apiError_('抽出処理でエラーにゃん：' + e.message);
+  }
+}
+
+// ── API②：同じセッションへ追加資料を保存・OCR ────────────
+
+function api_addExtractDocument(sessionId, base64Data, fileName, mimeType) {
+  try {
+    if (!sessionId) return apiError_('セッションIDがないにゃん。');
+    if (!base64Data) return apiError_('追加するPDFデータが空にゃん。');
+
+    const sessionSheet = getOrCreateExtractSessionSheet_();
+    const found = findExtractSessionRow_(sessionSheet, sessionId);
+    if (!found) return apiError_('作業中のセッションが見つからないにゃん。');
+
+    const status = String(found.rowValues[found.headerMap['ステータス'] - 1] || '');
+    if (status !== 'pending_review') {
+      return apiError_('このセッションは「' + status + '」状態なので資料を追加できないにゃん。');
+    }
+
+    const newDoc = processExtractDocument_(base64Data, fileName, mimeType, sessionId);
+    const merged = mergeKey3ForSession_(sessionId);
+    updateExtractSessionSummary_(sessionId, merged);
+
+    const data = buildSessionApiData_(sessionId, merged);
+    data.addedDocument = publicDocumentList_([newDoc])[0];
+    data.message = newDoc.documentType + 'としてOCR保存できたにゃん！';
+    return apiOk_(data);
+  } catch (e) {
+    Logger.log('api_addExtractDocument error: ' + e.stack);
+    return apiError_('資料の追加でエラーにゃん：' + e.message);
+  }
+}
+
+// ── API③：現在の資料一覧を取得 ─────────────────────────
+
+function api_getExtractDocuments(sessionId) {
+  try {
+    if (!sessionId) return apiError_('セッションIDがないにゃん。');
+    const sessionSheet = getOrCreateExtractSessionSheet_();
+    if (!findExtractSessionRow_(sessionSheet, sessionId)) {
+      return apiError_('作業中のセッションが見つからないにゃん。');
+    }
+    const merged = mergeKey3ForSession_(sessionId);
+    return apiOk_(buildSessionApiData_(sessionId, merged));
+  } catch (e) {
+    return apiError_('資料一覧の取得でエラーにゃん：' + e.message);
+  }
+}
+
+
+// ── Phase2：複数資料から案件カルテを組み立てる ───────────
+
+
+function normalizeWideChars_(text) {
+  return String(text || '')
+    .replace(/[０-９]/g, function(c) {
+      return String.fromCharCode(c.charCodeAt(0) - 0xFEE0);
+    })
+    .replace(/，/g, ',')
+    .replace(/：/g, ':');
+}
+
+function isWeakGenericValue_(value) {
+  const s = toSingleLine_(value);
+  return !s || /^(?:期間|別表のとおり|別紙のとおり|仕様書のとおり|以下のとおり|上記のとおり|同上)$/i.test(s);
+}
+
+function isBadSubmissionTo_(value) {
+  const s = toSingleLine_(value);
+  if (!s) return true;
+  if (/承諾を得る|協議を行う|措置について|契約において|暴力団|遅れが生じる/.test(s)) return true;
+  return !/(?:課|係|室|班|事務所|官|担当|宛|〒|@|電話|FAX|メール|地方整備局|会計隊|契約)/.test(s);
+}
+
+function cleanExtractedValue_(value) {
+  return toSingleLine_(String(value || ''))
+    .replace(/^[（(]?\d+[）)]?\s*/, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+
+function extractFirstMatch_(text, patterns, maxChars) {
+  const src = normalizeOcrText_(text);
+  for (let i = 0; i < patterns.length; i++) {
+    const m = src.match(patterns[i]);
+    if (m && m[1]) return truncate_(m[1], maxChars || 200);
+  }
+  return '';
+}
+
+function extractTitleDetail_(docs) {
+  const ordered = docs.slice().sort((a, b) => {
+    const rank = { '公告': 1, '見積依頼書': 2, '仕様書': 3, '不明': 9 };
+    return (rank[a.documentType] || 9) - (rank[b.documentType] || 9);
+  });
+  const patterns = [
+    /(?:件\s*名|案件名|調達件名|品\s*名)\s*[:：]?\s*([^\n]{2,120})/,
+    /(?:見積り合わせに付する事項|競争入札に付する事項)[\s\S]{0,200}?(?:件\s*名|品\s*名)\s*[:：]?\s*([^\n]{2,120})/,
+  ];
+  for (const doc of ordered) {
+    const v = extractFirstMatch_(doc.ocrText || '', patterns, 120);
+    if (v) return sourceValue_(v, doc, 85);
+  }
+  return sourceValue_('', null, 0);
+}
+
+function extractSubmissionDeadline_(docs) {
+  const ordered = docs.slice().sort((a, b) => {
+    const rank = {
+      '見積依頼書': 1,
+      '公告': 2,
+      '別紙': 3,
+      '仕様書': 4,
+      '不明': 5,
+    };
+    return (rank[a.documentType] || 5) - (rank[b.documentType] || 5);
+  });
+
+  const labels = /見積書提出期限|見積提出期限|提出期限|入札書提出期限|入札締切|見積期限|見積書の提出期間/;
+  const warekiDate = /(令和|平成)\s*(\d{1,2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/;
+  const westernDate = /(\d{4})[\/.\-](\d{1,2})[\/.\-](\d{1,2})/;
+  const timePattern = /(\d{1,2})\s*時(?:\s*(\d{1,2})\s*分)?/;
+
+  for (const doc of ordered) {
+    const lines = getLines_(normalizeWideChars_(doc.ocrText || ''));
+
+    for (let i = 0; i < lines.length; i++) {
+      if (!labels.test(lines[i])) continue;
+
+      const nearby = lines.slice(i, Math.min(lines.length, i + 6)).join(' ');
+      let value = '';
+
+      const wareki = nearby.match(warekiDate);
+      if (wareki) {
+        value = wareki[1] + wareki[2] + '年' + wareki[3] + '月' + wareki[4] + '日';
+      } else {
+        const western = nearby.match(westernDate);
+        if (western) {
+          value = western[1] + '/' + western[2] + '/' + western[3];
+        }
+      }
+
+      if (!value) continue;
+
+      const time = nearby.match(timePattern);
+      if (time) {
+        value += ' ' + time[1] + '時';
+        if (time[2]) value += time[2] + '分';
+      }
+
+      if (/必着/.test(nearby)) value += ' 必着';
+      else if (/まで/.test(nearby)) value += ' まで';
+
+      return sourceValue_(value, doc, 92);
+    }
+  }
+
+  return sourceValue_('', null, 0);
+}
+
+function extractSubmissionMethod_(docs) {
+  const ordered = docs.slice().sort(function(a, b) {
+    const rank = {
+      '見積依頼書': 1,
+      '公告': 2,
+      '別紙': 3,
+      '仕様書': 4,
+      '不明': 5,
+    };
+    return (rank[a.documentType] || 5) - (rank[b.documentType] || 5);
+  });
+
+  const labels = /提出方法|見積書の提出方法|入札方法|提出手段|提出要領/;
+  const mailPattern = /[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i;
+  const methods = /電子メール|E-?mail|メール|郵送|持参|電子調達システム|調達ポータル|FAX|ファクシミリ/i;
+
+  for (const doc of ordered) {
+    const lines = getLines_(doc.ocrText || '');
+
+    for (let i = 0; i < lines.length; i++) {
+      const current = lines[i] || '';
+      const nearby = lines.slice(Math.max(0, i - 1), Math.min(lines.length, i + 2)).join(' ');
+
+      const mail = nearby.match(mailPattern);
+      if (mail) {
+        return sourceValue_('電子メール：' + mail[0], doc, 95);
+      }
+
+      if (labels.test(current)) {
+        const methodMatch = nearby.match(methods);
+        if (methodMatch) {
+          return sourceValue_(methodMatch[0], doc, 88);
+        }
+      }
+    }
+  }
+
+  return sourceValue_('', null, 0);
+}
+
+
+function findReferencedSectionText_(text, sectionNumber) {
+  const lines = getLines_(text || '');
+  const sectionLabel = new RegExp('^\\s*[（(]?' + sectionNumber + '[）)]?\\s*');
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!sectionLabel.test(lines[i])) continue;
+
+    const block = lines.slice(i, Math.min(lines.length, i + 8)).join(' ');
+    if (/(提出場所|提出先|送付先|担当|契約|調達|会計|総務|課|係|室|班|事務所)/.test(block)) {
+      return truncate_(cleanExtractedValue_(block), 240);
+    }
+  }
+  return '';
+}
+
+function extractSubmissionTo_(docs) {
+  const ordered = docs.slice().sort(function(a, b) {
+    const rank = {
+      '見積依頼書': 1,
+      '公告': 2,
+      '別紙': 3,
+      '仕様書': 4,
+      '不明': 5,
+    };
+    return (rank[a.documentType] || 5) - (rank[b.documentType] || 5);
+  });
+
+  const labels = /提出先|送付先|見積書提出先|宛先|提出場所|担当部署|担当者/;
+  const referencePattern = /上記\s*(\d+)\s*に同じ/;
+
+  for (const doc of ordered) {
+    const lines = getLines_(doc.ocrText || '');
+
+    for (let i = 0; i < lines.length; i++) {
+      const current = lines[i] || '';
+      if (!labels.test(current)) continue;
+
+      const nearby = cleanExtractedValue_(
+        lines.slice(i, Math.min(lines.length, i + 4)).join(' ')
+      );
+
+      const ref = nearby.match(referencePattern);
+      if (ref) {
+        const referenced = findReferencedSectionText_(doc.ocrText || '', ref[1]);
+        if (referenced && !isBadSubmissionTo_(referenced)) {
+          return sourceValue_(referenced, doc, 92);
+        }
+      }
+
+      if (!isBadSubmissionTo_(nearby)) {
+        return sourceValue_(truncate_(nearby, 220), doc, 88);
+      }
+    }
+  }
+
+  // 提出先ラベルが崩れている場合、部署名・メール・電話を含む短い行を候補にする
+  for (const doc of ordered) {
+    const lines = getLines_(doc.ocrText || '');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] || '';
+      if (/(?:契約|調達|会計|総務).*(?:課|係|室|班)|(?:課|係|室|班).*(?:電話|FAX|メール)|地方整備局.*事務所/.test(line)) {
+        const candidate = cleanExtractedValue_(
+          lines.slice(Math.max(0, i - 1), Math.min(lines.length, i + 2)).join(' ')
+        );
+        if (!isBadSubmissionTo_(candidate)) {
+          return sourceValue_(truncate_(candidate, 220), doc, 72);
+        }
+      }
+    }
+  }
+
+  return sourceValue_('', null, 0);
+}
+
+function extractDeliveryPlace_(docs) {
+  const patterns = [
+    /(?:納入場所|納品場所|履行場所|納入先)\s*[:：]?\s*([^\n。]{2,180})/,
+  ];
+  for (const doc of docs) {
+    if (!['仕様書','別紙','不明','公告'].includes(doc.documentType)) continue;
+    const v = extractFirstMatch_(doc.ocrText || '', patterns, 180);
+    if (v) return sourceValue_(v, doc, 85);
+  }
+  return sourceValue_('', null, 0);
+}
+
+function extractDeliveryMethod_(docs) {
+  const ordered = docs.slice().sort(function(a, b) {
+    const rank = { '仕様書': 1, '別紙': 2, '公告': 3, '見積依頼書': 4, '不明': 5 };
+    return (rank[a.documentType] || 5) - (rank[b.documentType] || 5);
+  });
+
+  const labels = /納入方法|納品方法|搬入条件|納入条件|引渡方法|配送条件/;
+  const concrete = /一括納入|一括納品|分納|指定場所(?:へ|に)?納品|指定場所渡し|軒先渡し|搬入設置|宅配便|配送|持参|梱包|平日|開庁日|日時指定/;
+
+  for (const doc of ordered) {
+    const lines = getLines_(doc.ocrText || '');
+
+    for (let i = 0; i < lines.length; i++) {
+      const nearby = cleanExtractedValue_(
+        lines.slice(Math.max(0, i - 1), Math.min(lines.length, i + 3)).join(' ')
+      );
+
+      if (labels.test(lines[i] || '')) {
+        const matches = nearby.match(new RegExp(concrete.source, 'g')) || [];
+        if (matches.length) {
+          return sourceValue_(uniqueNonEmpty_(matches).join('／'), doc, 88);
+        }
+      }
+
+      const direct = (lines[i] || '').match(concrete);
+      if (direct) {
+        return sourceValue_(direct[0], doc, 72);
+      }
+    }
+  }
+
+  return sourceValue_('', null, 0);
+}
+
+function extractTaxTreatment_(docs) {
+  const patterns = [
+    /((?:消費税及び地方消費税|消費税)[^\n。]{0,140}(?:含む|含まない|加算|除く|税抜|税込))/,
+    /((?:見積金額|見積価格|見積書)[^\n。]{0,100}(?:税抜|税込|税別)[^\n。]{0,40})/,
+    /((?:税込|税抜|税別)[^\n。]{0,60})/,
+  ];
+
+  for (const doc of docs) {
+    const value = extractFirstMatch_(doc.ocrText || '', patterns, 150);
+    if (value) return sourceValue_(cleanExtractedValue_(value), doc, 78);
+  }
+  return sourceValue_('', null, 0);
+}
+
+function extractEquivalentProduct_(docs) {
+  const joined = docs.map(function(doc) {
+    return normalizeOcrText_(doc.ocrText || '');
+  }).join('\n');
+
+  if (/同等品\s*(?:不可|認めない|不可とする)|同等品は認めない/.test(joined)) {
+    const doc = docs.find(function(d) {
+      return /同等品\s*(?:不可|認めない|不可とする)|同等品は認めない/.test(d.ocrText || '');
+    });
+    return sourceValue_('同等品不可', doc, 97);
+  }
+
+  if (/同等品申請|同等品確認|同等品承認|事前承認/.test(joined)) {
+    const doc = docs.find(function(d) {
+      return /同等品申請|同等品確認|同等品承認|事前承認/.test(d.ocrText || '');
+    });
+    return sourceValue_('同等品可（要申請・要承認）', doc, 92);
+  }
+
+  if (/同等品\s*(?:可|可能)|同等以上の品|同等又はそれ以上/.test(joined)) {
+    const doc = docs.find(function(d) {
+      return /同等品\s*(?:可|可能)|同等以上の品|同等又はそれ以上/.test(d.ocrText || '');
+    });
+    return sourceValue_('同等品可', doc, 90);
+  }
+
+  return sourceValue_('資料に記載なし・要確認', null, 55);
+}
+
+function extractEquivalentDeadline_(docs) {
+  const patterns = [
+    /(?:同等品申請期限|同等品確認期限|同等品承認申請期限)\s*[:：]?\s*([^\n。]{2,100})/,
+    /同等品[^\n。]{0,80}((?:令和|平成)\s*\d{1,2}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日[^\n。]{0,20})/,
+  ];
+  for (const doc of docs) {
+    const v = extractFirstMatch_(doc.ocrText || '', patterns, 100);
+    if (v) return sourceValue_(v, doc, 75);
+  }
+  return sourceValue_('', null, 0);
+}
+
+
+// ── Phase2.2：規格・仕様の構造抽出 ─────────────
+
+function uniqueNonEmpty_(values) {
+  const seen = {};
+  const out = [];
+  (values || []).forEach(function(value) {
+    const clean = cleanExtractedValue_(value);
+    if (!clean || seen[clean]) return;
+    seen[clean] = true;
+    out.push(clean);
+  });
+  return out;
+}
+
+function normalizeSpecToken_(value) {
+  return cleanExtractedValue_(String(value || ''))
+    .replace(/[、，]\s*/g, '、')
+    .replace(/\s*×\s*/g, '×')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function detectEnvelopeSize_(text) {
+  const src = normalizeWideChars_(text || '');
+  const patterns = [
+    /(?:角|長|洋)\s*[0-9]{1,2}\s*(?:形|号)?/,
+    /(?:角形|長形|洋形)\s*[0-9]{1,2}\s*号?/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = src.match(pattern);
+    if (!match) continue;
+
+    return normalizeSpecToken_(match[0])
+      .replace(/角形/g, '角')
+      .replace(/長形/g, '長')
+      .replace(/洋形/g, '洋')
+      .replace(/\s+/g, '')
+      .replace(/形$/, '')
+      .replace(/号$/, '');
+  }
+  return '';
+}
+
+function extractSpecificationTags_(docs, itemName, titleValue) {
+  const ordered = docs.slice().sort(function(a, b) {
+    const rank = {
+      '仕様書': 1,
+      '別紙': 2,
+      '見積依頼書': 3,
+      '公告': 4,
+      '不明': 5,
+    };
+    return (rank[a.documentType] || 5) - (rank[b.documentType] || 5);
+  });
+
+  const weighted = [];
+  const sourceNames = [];
+  const itemWord = cleanExtractedValue_(itemName || '');
+  const isEnvelope = /封筒/.test(itemWord + ' ' + String(titleValue || ''));
+
+  function addTag_(value, score, sourceName) {
+    const clean = normalizeSpecToken_(value);
+    if (!clean) return;
+    weighted.push({ value: clean, score: Number(score || 0) });
+    if (sourceName) sourceNames.push(sourceName);
+  }
+
+  ordered.forEach(function(doc) {
+    const text = normalizeWideChars_(doc.ocrText || '');
+    const lines = getLines_(text);
+    const sourceName = doc.fileName || doc.documentType || '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] || '';
+      const nearItem = itemWord && (
+        line.indexOf(itemWord) !== -1 ||
+        lines.slice(Math.max(0, i - 2), Math.min(lines.length, i + 3)).join(' ').indexOf(itemWord) !== -1
+      );
+
+      const specSignal = /角形?|長形?|洋形?|クラフト|ケント|上質|コート|マット|坪量|g\/㎡|kg|窓|郵便番号枠|〒枠|センター貼り|サイド貼り|中貼り|片面|両面|黒|カラー|特色|刷色|寸法|サイズ|縦|横|厚さ|容量|保存期間|本入|枚入|個入/.test(line);
+
+      if (!nearItem && !specSignal) continue;
+
+      const block = lines.slice(Math.max(0, i - 2), Math.min(lines.length, i + 5)).join(' ');
+      const baseScore = nearItem ? 95 : (doc.documentType === '仕様書' ? 82 : 68);
+
+      const size = detectEnvelopeSize_(block);
+      if (size) addTag_(size, baseScore + 3, sourceName);
+
+      const patterns = [
+        { re: /(?:クラフト|ケント|上質|コート|マット)(?:紙)?[^\s、。]{0,12}(?:\d+(?:\.\d+)?\s*(?:kg|g\/㎡))?/g, score: 92 },
+        { re: /\d+(?:\.\d+)?\s*(?:kg|g\/㎡)/g, score: 80 },
+        { re: /窓(?:付|付き|あり|なし|有|無)/g, score: 90 },
+        { re: /(?:郵便番号枠|〒枠)(?:あり|なし|有|無)?/g, score: 90 },
+        { re: /(?:センター貼り|サイド貼り|中貼り)/g, score: 88 },
+        { re: /(?:片面|両面)(?:印刷)?/g, score: 86 },
+        { re: /(?:黒|赤|青|緑|カラー|フルカラー|モノクロ)\s*\d*\s*色?/g, score: 82 },
+        { re: /特色\s*\d+\s*色/g, score: 86 },
+        { re: /(?:縦|横)\s*\d+(?:\.\d+)?\s*(?:mm|cm)/g, score: 80 },
+        { re: /\d+(?:\.\d+)?\s*[×xX]\s*\d+(?:\.\d+)?\s*(?:mm|cm)/g, score: 86 },
+        { re: /\d+(?:\.\d+)?\s*(?:ml|mL|L)/g, score: 84 },
+        { re: /\d+\s*(?:本|枚|個)入/g, score: 84 },
+        { re: /\d+\s*年保存/g, score: 90 },
+      ];
+
+      patterns.forEach(function(entry) {
+        const matches = block.match(entry.re) || [];
+        matches.forEach(function(value) {
+          addTag_(value, Math.max(baseScore, entry.score), sourceName);
+        });
+      });
+    }
+
+    // 封筒案件は仕様書全文から封筒特有語を補完
+    if (isEnvelope && doc.documentType === '仕様書') {
+      const fullSize = detectEnvelopeSize_(text);
+      if (fullSize) addTag_(fullSize, 96, sourceName);
+
+      [
+        /(?:クラフト|ケント|上質)(?:紙)?[^\s、。]{0,12}(?:\d+(?:\.\d+)?\s*(?:kg|g\/㎡))?/g,
+        /窓(?:付|付き|あり|なし|有|無)/g,
+        /(?:郵便番号枠|〒枠)(?:あり|なし|有|無)?/g,
+        /(?:センター貼り|サイド貼り|中貼り)/g,
+        /(?:片面|両面)(?:印刷)?/g,
+        /(?:黒|カラー|フルカラー|モノクロ)\s*\d*\s*色?/g,
+      ].forEach(function(pattern) {
+        (text.match(pattern) || []).forEach(function(value) {
+          addTag_(value, 88, sourceName);
+        });
+      });
+    }
+  });
+
+  const best = {};
+  weighted.forEach(function(entry) {
+    if (!best[entry.value] || best[entry.value] < entry.score) {
+      best[entry.value] = entry.score;
+    }
+  });
+
+  const sorted = Object.keys(best)
+    .map(function(value) { return { value: value, score: best[value] }; })
+    .sort(function(a, b) { return b.score - a.score; });
+
+  return {
+    tags: sorted.slice(0, 20).map(function(entry) { return entry.value; }),
+    tagScores: sorted.slice(0, 20),
+    sourceFiles: uniqueNonEmpty_(sourceNames).slice(0, 10),
+    confidence: sorted.length
+      ? Math.round(sorted.reduce(function(sum, entry) { return sum + entry.score; }, 0) / sorted.length)
+      : 0,
+  };
+}
+
+function buildSpecificationText_(specInfo) {
+  const tags = specInfo && specInfo.tags ? specInfo.tags : [];
+  return tags.join('／');
+}
+
+function extractItemsDetail_(docs, titleValue) {
+  const items = [];
+  const seen = {};
+  const unitPattern = '(枚|個|本|冊|箱|式|組|台|袋|巻|セット|着|足|kg|g|L|ml|部|ケース|束)';
+  const ordered = docs.slice().sort(function(a, b) {
+    const rank = {
+      '仕様書': 1,
+      '別紙': 2,
+      '見積依頼書': 3,
+      '公告': 4,
+      '不明': 5,
+    };
+    return (rank[a.documentType] || 5) - (rank[b.documentType] || 5);
+  });
+
+  function addItem_(name, quantity, unit, doc, confidence) {
+    let cleanName = cleanExtractedValue_(name)
+      .replace(/^[（(]?\d+[）)]?\s*/, '')
+      .replace(/(?:購入|調達|納入|製作)\s*$/, '')
+      .trim();
+
+    const cleanQuantity = String(quantity || '').replace(/,/g, '');
+    const cleanUnit = String(unit || '');
+
+    if (!cleanName || /令和|平成|第\d+条|期限|場所|資格|ページ|頁/.test(cleanName)) return;
+
+    // 「角2封筒」などは品目と規格を分離
+    let embeddedSize = detectEnvelopeSize_(cleanName);
+    if (embeddedSize) {
+      cleanName = cleanName.replace(/(?:角|長|洋)\s*[0-9]{1,2}\s*(?:形|号)?/, '').trim();
+    }
+
+    const key = cleanName + '|' + cleanQuantity + '|' + cleanUnit;
+    if (seen[key]) return;
+    seen[key] = true;
+
+    const specInfo = extractSpecificationTags_(docs, cleanName, titleValue);
+    if (embeddedSize && !specInfo.tags.includes(embeddedSize)) {
+      specInfo.tags.unshift(embeddedSize);
+    }
+
+    items.push({
+      name: truncate_(cleanName, 80),
+      quantity: cleanQuantity,
+      unit: cleanUnit,
+      specification: buildSpecificationText_(specInfo),
+      specificationTags: specInfo.tags,
+      specificationSourceFiles: specInfo.sourceFiles,
+      sourceType: doc ? doc.documentType : '案件名',
+      sourceFileName: doc ? doc.fileName : '',
+      confidence: Number(confidence || 0),
+      specificationConfidence: Number(specInfo.confidence || 0),
+    });
+  }
+
+  for (const doc of ordered) {
+    const text = normalizeWideChars_(normalizeOcrText_(doc.ocrText || ''));
+    const patterns = [
+      new RegExp('(?:品名|名称|品目)\\s*[:：]?\\s*([^\\n]{1,80})[\\s\\S]{0,160}?(?:数量|予定数量)\\s*[:：]?\\s*(\\d[\\d,]*)\\s*' + unitPattern, 'g'),
+      new RegExp('([^\\n]{1,60}?)\\s+(\\d[\\d,]*)\\s*' + unitPattern, 'g'),
+    ];
+
+    patterns.forEach(function(pattern) {
+      let match;
+      while ((match = pattern.exec(text)) && items.length < 20) {
+        addItem_(match[1], match[2], match[3], doc, 76);
+      }
+    });
+  }
+
+  if (!items.length && titleValue) {
+    const title = normalizeWideChars_(toSingleLine_(titleValue));
+    const match = title.match(/^(.{1,60}?)\s*(\d[\d,]*)\s*(枚|個|本|冊|箱|式|組|台|袋|巻|セット|着|足|kg|g|L|ml|部|ケース|束)\s*(?:購入|調達|納入|製作)?$/);
+
+    if (match) {
+      addItem_(match[1], match[2], match[3], null, 88);
+    }
+  }
+
+  return items;
+}
+
+function sourceValue_(value, doc, confidence) {
+  return {
+    value: value || '',
+    sourceType: doc ? (doc.documentType || '') : '',
+    sourceFileName: doc ? (doc.fileName || '') : '',
+    documentId: doc ? (doc.documentId || '') : '',
+    confidence: Number(confidence || 0),
+  };
+}
+
+function detectCategoryAndFeatures_(title, docs, items) {
+  const fileNames = docs.map(function(doc) {
+    return doc.fileName || '';
+  }).join('\n');
+
+  const ocrBody = docs.map(function(doc) {
+    return doc.ocrText || '';
+  }).join('\n');
+
+  const all = normalizeWideChars_(
+    [title, fileNames, ocrBody].join('\n')
+  );
+
+  const scores = {
+    '物品': 10,
+    '印刷': 0,
+    '防災・備蓄': 0,
+    '食品': 0,
+    'ノベルティ': 0,
+    '役務': 0,
+  };
+
+  const features = [];
+
+  [
+    [/印刷/, 30],
+    [/刷色|刷り込み|刷込/, 26],
+    [/版下|入稿データ|印刷データ/, 24],
+    [/校正/, 16],
+    [/封筒[^\n]{0,80}(?:印|刷)/, 32],
+    [/片面|両面|特色|オフセット/, 14],
+    [/見積書.*印刷|仕様書.*印刷/, 18],
+  ].forEach(function(signal) {
+    if (signal[0].test(all)) scores['印刷'] += signal[1];
+  });
+
+  if (/印刷/.test(fileNames)) scores['印刷'] += 24;
+  if (/封筒/.test(title) && /印刷|刷色|版下|校正|片面|両面/.test(all)) {
+    scores['印刷'] += 28;
+  }
+
+  if (scores['印刷'] >= 24) features.push('印刷あり');
+  if (/デザイン|データ作成|レイアウト|版下作成/.test(all)) {
+    features.push('デザイン・データ作成あり');
+  }
+  if (/校正/.test(all)) features.push('校正あり');
+  if (/色校正/.test(all)) features.push('色校正あり');
+
+  if (/非常食|保存水|備蓄|防災|簡易トイレ/.test(all)) {
+    scores['防災・備蓄'] += 55;
+    features.push('防災・備蓄品');
+  }
+
+  if (/ノベルティ|キーホルダー|ぬいぐるみ|記念品|缶バッジ/.test(all)) {
+    scores['ノベルティ'] += 50;
+    features.push('ノベルティ');
+  }
+
+  if (/食品|飲料|精米|アルファ米|パン|缶詰|レトルト/.test(all)) {
+    scores['食品'] += 42;
+  }
+
+  const serviceWords = [
+    '清掃', '保守', '点検', '警備', '運転管理', '調査業務',
+    '設計業務', '派遣', '受付業務', '剪定', '草刈',
+    '修繕', '施工', '据付', '取付', '撤去'
+  ];
+
+  let serviceHits = 0;
+  serviceWords.forEach(function(word) {
+    if (all.indexOf(word) !== -1) serviceHits++;
+  });
+
+  scores['役務'] += serviceHits * 18;
+
+  if (serviceHits >= 2 || /業務委託|役務の提供/.test(all)) {
+    scores['役務'] += 24;
+    features.push('作業あり');
+  }
+
+  if (/サンプル|見本品/.test(all)) {
+    features.push('サンプル・見本品あり');
+  }
+
+  if (/複数(?:箇所|か所)|分納/.test(all)) {
+    features.push('複数納品・分納');
+  }
+
+  if (scores['印刷'] >= 40) {
+    scores['役務'] = Math.min(scores['役務'], scores['印刷'] - 15);
+    scores['物品'] = Math.min(scores['物品'], scores['印刷'] - 10);
+  }
+
+  let category = '物品';
+  Object.keys(scores).forEach(function(key) {
+    if (scores[key] > scores[category]) category = key;
+  });
+
+  const tags = [];
+  [
+    '封筒', 'チラシ', 'ポスター', 'パンフレット', '冊子',
+    '保存水', '非常食', '印刷', '同等品', '電子入札',
+    '分納', '校正'
+  ].forEach(function(word) {
+    if (all.indexOf(word) !== -1) tags.push(word);
+  });
+
+  (items || []).slice(0, 5).forEach(function(item) {
+    if (item.name && !tags.includes(item.name)) tags.push(item.name);
+  });
+
+  (items || []).forEach(function(item) {
+    (item.specificationTags || []).forEach(function(tag) {
+      if (!tags.includes(tag)) tags.push(tag);
+    });
+  });
+
+  return {
+    category: category,
+    features: Array.from(new Set(features)),
+    tags: Array.from(new Set(tags)).slice(0, 20),
+  };
+}
+
+function detectAttachmentFlags_(docs) {
+  const fileNames = docs.map(doc => String(doc.fileName || '')).join('\n');
+  const ocrText = docs.map(doc => String(doc.ocrText || '')).join('\n');
+  const uploadedTypes = docs.map(doc => doc.documentType || '不明');
+
+  return {
+    hasAttachments: docs.length > 1,
+    hasSpecification: uploadedTypes.includes('仕様書') || /仕様書/.test(fileNames),
+    hasAppendix: /別紙|別添/.test(fileNames),
+    hasDrawing: /図面/.test(fileNames),
+    hasPrintData: /印刷データ|版下データ|入稿データ|\.ai\b|Illustrator/i.test(fileNames),
+    hasBreakdown: /内訳書|明細書/.test(fileNames),
+    hasContractDraft: /契約書\s*[（(]?案[）)]?|契約書案/.test(fileNames),
+
+    mentionedAppendix: /別紙|別添/.test(ocrText),
+    mentionedDrawing: /図面/.test(ocrText),
+    mentionedPrintData: /印刷データ|版下データ|入稿データ|Illustrator/i.test(ocrText),
+    mentionedBreakdown: /内訳書|明細書/.test(ocrText),
+
+    files: publicDocumentList_(docs),
+  };
+}
+
+function makeSummary_(title, category, items, features, deliveryPlace) {
+  const item = items && items[0];
+  let subject = '';
+
+  if (item && item.name) {
+    subject = item.name;
+    if (item.quantity) {
+      subject += ' ' + Number(item.quantity).toLocaleString('ja-JP') + (item.unit || '');
+    }
+  } else {
+    subject = title || '案件';
+  }
+
+  let action = 'を調達する';
+
+  if (category === '印刷') {
+    action = 'へ指定内容の印刷を行い納品する';
+  } else if (category === '役務') {
+    action = 'に関する業務を実施する';
+  } else if (category === '防災・備蓄') {
+    action = 'を防災備蓄品として納品する';
+  } else if (category === 'ノベルティ') {
+    action = 'を製作・納品する';
+  }
+
+  let summary = subject + action;
+  const place = cleanExtractedValue_(deliveryPlace || '');
+
+  if (place && place.length <= 100) {
+    summary += '（納品先：' + place + '）';
+  }
+
+  return truncate_(summary + '案件。', 190);
+}
+
+
+function makeSafeSubmissionFallback_(orgValue) {
+  const org = cleanExtractedValue_(orgValue || '');
+  if (!org) return '';
+  if (!/(事務所|地方整備局|会計隊|役所|役場|庁|局|部|課|室)/.test(org)) return '';
+  return org;
+}
+
+function buildPhase2Detail_(sessionId) {
+  const docs = getExtractDocuments_(sessionId, true);
+  if (!docs.length) throw new Error('詳細を調べる資料が見つからないにゃん。');
+
+  const merged = mergeKey3ForSession_(sessionId);
+  const title = extractTitleDetail_(docs);
+  const items = extractItemsDetail_(docs, title.value);
+  const cf = detectCategoryAndFeatures_(title.value, docs, items);
+  const deliveryPlace = extractDeliveryPlace_(docs);
+  const deliveryMethod = extractDeliveryMethod_(docs);
+  const submissionDeadline = extractSubmissionDeadline_(docs);
+  const submissionMethod = extractSubmissionMethod_(docs);
+  let submissionTo = extractSubmissionTo_(docs);
+  const taxTreatment = extractTaxTreatment_(docs);
+  const equivalentStatus = extractEquivalentProduct_(docs);
+
+  if (!submissionTo.value || /上記\s*\d+\s*に同じ|回答書|ホームページに掲載/.test(submissionTo.value)) {
+    const fallback = makeSafeSubmissionFallback_(merged.org && merged.org.value);
+    if (fallback) {
+      submissionTo = sourceValue_(fallback, null, 68);
+    }
+  }
+
+  const detail = {
+    sessionId: sessionId,
+    version: '2.2-Final',
+    generatedAt: new Date().toISOString(),
+    basic: {
+      title: title,
+      org: merged.org,
+      qualification: merged.qualification,
+      category: sourceValue_(cf.category, null, 70),
+      summary: sourceValue_(makeSummary_(title.value, cf.category, items, cf.features, deliveryPlace.value), null, 78),
+    },
+    items: items,
+    delivery: {
+      deadline: merged.deadline,
+      place: deliveryPlace,
+      method: deliveryMethod,
+    },
+    submission: {
+      deadline: submissionDeadline,
+      method: submissionMethod,
+      to: submissionTo,
+      taxTreatment: taxTreatment,
+    },
+    equivalentProduct: {
+      status: equivalentStatus,
+      deadline: extractEquivalentDeadline_(docs),
+    },
+    attachments: detectAttachmentFlags_(docs),
+    features: cf.features,
+    tags: cf.tags,
+    confidence: {
+      title: Number(title.confidence || 0),
+      org: Number(merged.org && merged.org.confidence || 0),
+      qualification: Number(merged.qualification && merged.qualification.confidence || 0),
+      category: 88,
+      summary: 82,
+      items: items.length ? Math.round(items.reduce(function(sum, item) {
+        return sum + Number(item.confidence || 0);
+      }, 0) / items.length) : 0,
+      specification: items.length ? Math.round(items.reduce(function(sum, item) {
+        return sum + Number(item.specificationConfidence || 0);
+      }, 0) / items.length) : 0,
+      deliveryDeadline: Number(merged.deadline && merged.deadline.confidence || 0),
+      deliveryPlace: Number(deliveryPlace.confidence || 0),
+      deliveryMethod: Number(deliveryMethod.confidence || 0),
+      submissionDeadline: Number(submissionDeadline.confidence || 0),
+      submissionMethod: Number(submissionMethod.confidence || 0),
+      submissionTo: Number(submissionTo.confidence || 0),
+      taxTreatment: Number(taxTreatment.confidence || 0),
+      equivalentProduct: Number(equivalentStatus.confidence || 0),
+    },
+    warnings: [],
+    documents: publicDocumentList_(docs),
+  };
+
+  if (!detail.basic.title.value) detail.warnings.push('正式案件名を確認してにゃん。');
+  if (!detail.items.length) detail.warnings.push('品目・数量をうまく抽出できなかったにゃん。手入力で確認してにゃん。');
+  if (!detail.delivery.place.value) detail.warnings.push('納品場所が未検出にゃん。');
+  if (!detail.submission.deadline.value) detail.warnings.push('提出期限が未検出にゃん。');
+  if (detail.equivalentProduct.status.value === '資料に記載なし・要確認') detail.warnings.push('同等品可否は資料に明確な記載が見つからないにゃん。');
+
+  return detail;
+}
+
+function savePhase2Json_(sessionId, detail) {
+  const folder = getOrCreateTempFolder_();
+  const sheet = getOrCreateExtractSessionSheet_();
+  const found = findExtractSessionRow_(sheet, sessionId);
+  if (!found) throw new Error('セッションが見つからないにゃん。');
+
+  const oldId = found.rowValues[found.headerMap['Phase2_JSONファイルID'] - 1];
+  if (oldId) trashFileIfExists_(String(oldId));
+
+  const blob = Utilities.newBlob(
+    JSON.stringify(detail, null, 2),
+    'application/json',
+    'Phase2_' + sessionId + '.json'
+  );
+  const file = folder.createFile(blob);
+  sheet.getRange(found.row, found.headerMap['Phase2_JSONファイルID']).setValue(file.getId());
+  sheet.getRange(found.row, found.headerMap['Phase2更新日時']).setValue(new Date());
+  sheet.getRange(found.row, found.headerMap['ステータス']).setValue('phase2_draft');
+  return file.getId();
+}
+
+function sanitizePhase2Payload_(payload) {
+  const p = payload || {};
+  const cleanText = v => truncate_(String(v || ''), 4000);
+  const cleanItems = Array.isArray(p.items) ? p.items.slice(0, 50).map(i => ({
+    name: cleanText(i.name),
+    quantity: cleanText(i.quantity),
+    unit: cleanText(i.unit),
+    specification: cleanText(i.specification),
+    specificationTags: Array.isArray(i.specificationTags)
+      ? i.specificationTags.slice(0, 30).map(cleanText)
+      : [],
+    specificationSourceFiles: Array.isArray(i.specificationSourceFiles)
+      ? i.specificationSourceFiles.slice(0, 20).map(cleanText)
+      : [],
+    specificationConfidence: Number(i.specificationConfidence || 0),
+    sourceType: cleanText(i.sourceType),
+    sourceFileName: cleanText(i.sourceFileName),
+    confidence: Number(i.confidence || 0),
+  })) : [];
+
+  return {
+    sessionId: cleanText(p.sessionId),
+    version: '2.2-Final',
+    savedAt: new Date().toISOString(),
+    basic: {
+      title: { value: cleanText(p.basic && p.basic.title && p.basic.title.value) },
+      org: { value: cleanText(p.basic && p.basic.org && p.basic.org.value) },
+      qualification: { value: cleanText(p.basic && p.basic.qualification && p.basic.qualification.value) },
+      category: { value: cleanText(p.basic && p.basic.category && p.basic.category.value) },
+      summary: { value: cleanText(p.basic && p.basic.summary && p.basic.summary.value) },
+    },
+    items: cleanItems,
+    delivery: {
+      deadline: { value: cleanText(p.delivery && p.delivery.deadline && p.delivery.deadline.value) },
+      place: { value: cleanText(p.delivery && p.delivery.place && p.delivery.place.value) },
+      method: { value: cleanText(p.delivery && p.delivery.method && p.delivery.method.value) },
+    },
+    submission: {
+      deadline: { value: cleanText(p.submission && p.submission.deadline && p.submission.deadline.value) },
+      method: { value: cleanText(p.submission && p.submission.method && p.submission.method.value) },
+      to: { value: cleanText(p.submission && p.submission.to && p.submission.to.value) },
+      taxTreatment: { value: cleanText(p.submission && p.submission.taxTreatment && p.submission.taxTreatment.value) },
+    },
+    equivalentProduct: {
+      status: { value: cleanText(p.equivalentProduct && p.equivalentProduct.status && p.equivalentProduct.status.value) },
+      deadline: { value: cleanText(p.equivalentProduct && p.equivalentProduct.deadline && p.equivalentProduct.deadline.value) },
+    },
+    attachments: p.attachments || {},
+    features: Array.isArray(p.features) ? p.features.slice(0, 30).map(cleanText) : [],
+    tags: Array.isArray(p.tags) ? p.tags.slice(0, 30).map(cleanText) : [],
+    confidence: p.confidence || {},
+    warnings: Array.isArray(p.warnings) ? p.warnings.slice(0, 30).map(cleanText) : [],
+    documents: Array.isArray(p.documents) ? p.documents.slice(0, 30) : [],
+  };
+}
+
+function api_savePhase2Draft(sessionId, payload) {
+  try {
+    if (!sessionId) return apiError_('セッションIDがないにゃん。');
+    const clean = sanitizePhase2Payload_(payload);
+    clean.sessionId = sessionId;
+    const jsonFileId = savePhase2Json_(sessionId, clean);
+    return apiOk_({
+      sessionId: sessionId,
+      jsonFileId: jsonFileId,
+      message: '入力内容を保存したにゃん！次は案件登録へ進めるにゃん🐈',
+    });
+  } catch (e) {
+    Logger.log('api_savePhase2Draft error: ' + e.stack);
+    return apiError_('Phase2の保存でエラーにゃん：' + e.message);
+  }
+}
+
+
+
+
+// ── Phase2.3 / v0.9.0：案件カルテ確認後の正式登録 ─────────────
+
+function phase2PayloadToOcrResult_(clean, docs) {
+  const firstItem = clean.items && clean.items.length ? clean.items[0] : {};
+  const equivalentText = clean.equivalentProduct && clean.equivalentProduct.status
+    ? clean.equivalentProduct.status.value : '';
+  let equivalentAllowed = null;
+  if (/不可|認めない/.test(equivalentText)) equivalentAllowed = false;
+  else if (/可|可能/.test(equivalentText)) equivalentAllowed = true;
+
+  return {
+    title: clean.basic.title.value,
+    summary: clean.basic.summary.value,
+    org: clean.basic.org.value,
+    category: clean.basic.category.value,
+    qualification: clean.basic.qualification.value,
+    items: (clean.items || []).map(function(item) {
+      return {
+        name: item.name || '',
+        specification: item.specification || '',
+        quantity: item.quantity || '',
+        unit: item.unit || ''
+      };
+    }),
+    itemName: firstItem.name || '',
+    specification: firstItem.specification || '',
+    quantity: firstItem.quantity || '',
+    unit: firstItem.unit || '',
+    submissionDeadline: clean.submission.deadline.value,
+    submissionMethod: clean.submission.method.value,
+    submissionDestination: clean.submission.to.value,
+    deliveryDate: clean.delivery.deadline.value,
+    deliveryPlace: clean.delivery.place.value,
+    deliveryMethod: clean.delivery.method.value,
+    equivalentAllowed: equivalentAllowed,
+    equivalentProductNote: equivalentText || '資料に記載なし・要確認',
+    attachments: (docs || []).map(function(doc) {
+      return {
+        type: doc.documentType || 'other',
+        name: doc.fileName || '資料',
+        fileId: doc.pdfFileId || '',
+        url: doc.pdfFileId ? DriveApp.getFileById(doc.pdfFileId).getUrl() : ''
+      };
+    }),
+    ocrEngine: 'Google Drive OCR',
+    ocrVersion: '2.3-web-v0.9.0',
+    rawPhase2: clean
+  };
+}
+
+function makeUniqueFileNameInFolder_(folder, requestedName) {
+  let name = String(requestedName || 'document.pdf').replace(/[\\/:*?"<>|]/g, '_');
+  if (!folder.getFilesByName(name).hasNext()) return name;
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  let n = 2;
+  while (folder.getFilesByName(stem + '_' + n + ext).hasNext()) n++;
+  return stem + '_' + n + ext;
+}
+
+function copyAdditionalSessionDocuments_(docs, registrationResult) {
+  if (!registrationResult || !registrationResult.caseJson) return [];
+  const source = registrationResult.caseJson.source || {};
+  const originalFolderId = source.subfolderIds && source.subfolderIds['01_原本'];
+  if (!originalFolderId) return [];
+  const folder = DriveApp.getFolderById(originalFolderId);
+  const copied = [];
+
+  (docs || []).slice(1).forEach(function(doc) {
+    if (!doc.pdfFileId) return;
+    const original = DriveApp.getFileById(doc.pdfFileId);
+    const name = makeUniqueFileNameInFolder_(folder, doc.fileName || original.getName());
+    const file = original.makeCopy(name, folder);
+    copied.push({ id:file.getId(), url:file.getUrl(), name:file.getName(), documentType:doc.documentType || '不明' });
+  });
+  return copied;
+}
+
+function finalizeRegisteredCaseJson_(registrationResult, docs, additionalFiles) {
+  const caseJson = registrationResult.caseJson;
+  caseJson.status = 'registered';
+  caseJson.attachments = [];
+
+  (docs || []).forEach(function(doc, index) {
+    let fileInfo = null;
+    if (index === 0 && registrationResult.registration.savedFiles && registrationResult.registration.savedFiles.original) {
+      fileInfo = registrationResult.registration.savedFiles.original;
+    } else if (index > 0) {
+      fileInfo = (additionalFiles || [])[index - 1] || null;
+    }
+    caseJson.attachments.push({
+      type: doc.documentType || 'other',
+      name: doc.fileName || (fileInfo && fileInfo.name) || '資料',
+      fileId: fileInfo ? fileInfo.id : '',
+      url: fileInfo ? fileInfo.url : ''
+    });
+  });
+  caseJson.audit.updatedAt = new Date().toISOString();
+
+  if (caseJson.source && caseJson.source.jsonFileId) {
+    DriveApp.getFileById(caseJson.source.jsonFileId).setContent(JSON.stringify(caseJson, null, 2));
+  }
+  registrationResult.caseJson = caseJson;
+  registrationResult.registration.additionalOriginals = additionalFiles || [];
+  return registrationResult;
+}
+
+function markExtractSessionRegistered_(sessionId, projectId, folderUrl) {
+  const sheet = getOrCreateExtractSessionSheet_();
+  const found = findExtractSessionRow_(sheet, sessionId);
+  if (!found) return;
+  sheet.getRange(found.row, found.headerMap['ステータス']).setValue('registered');
+  sheet.getRange(found.row, found.headerMap['Phase2更新日時']).setValue(new Date());
+  sheet.getRange(found.row, found.headerMap['備考']).setValue(
+    '正式登録完了：' + projectId + (folderUrl ? ' / ' + folderUrl : '')
+  );
+}
+
+function cleanupRegisteredTempDocuments_(docs) {
+  (docs || []).forEach(function(doc) {
+    trashFileIfExists_(doc.pdfFileId);
+    trashFileIfExists_(doc.ocrDocId);
+  });
+}
+
+/**
+ * 案件カルテの確認・修正内容を正式登録するWeb API。
+ * PDF/OCR一時セッション → Core v0.9.0 → 案件マスター＋案件フォルダ。
+ */
+function api_registerPhase2Case(sessionId, payload) {
+  try {
+    if (!sessionId) return apiError_('セッションIDがないにゃん。');
+    if (typeof processOcrResultToProject_ !== 'function') {
+      return apiError_('Core v0.9.0 が同じApps Scriptプロジェクトに入っていないにゃん。');
+    }
+
+    const sessionSheet = getOrCreateExtractSessionSheet_();
+    const found = findExtractSessionRow_(sessionSheet, sessionId);
+    if (!found) return apiError_('作業中のセッションが見つからないにゃん。');
+    const status = String(found.rowValues[found.headerMap['ステータス'] - 1] || '');
+    if (status === 'registered') return apiError_('この案件はすでに正式登録済みにゃん。');
+    if (!['pending_review', 'phase2_draft'].includes(status)) {
+      return apiError_('このセッションは「' + status + '」状態なので登録できないにゃん。');
+    }
+
+    const clean = sanitizePhase2Payload_(payload);
+    clean.sessionId = sessionId;
+    const docs = getExtractDocuments_(sessionId, true);
+    if (!docs.length) return apiError_('登録するPDF資料が見つからないにゃん。');
+
+    const combinedOcr = docs.map(function(doc) {
+      return '===== ' + (doc.fileName || doc.documentType || '資料') + ' =====\n' + (doc.ocrText || '');
+    }).join('\n\n');
+    const ocrResult = phase2PayloadToOcrResult_(clean, docs);
+    const primary = docs[0];
+
+    let result = processOcrResultToProject_(ocrResult, {
+      fileId: primary.pdfFileId,
+      fileName: primary.fileName,
+      ocrText: combinedOcr,
+      actor: 'Web案件カルテ'
+    });
+
+    const additionalFiles = copyAdditionalSessionDocuments_(docs, result);
+    result = finalizeRegisteredCaseJson_(result, docs, additionalFiles);
+    markExtractSessionRegistered_(sessionId, result.registration.projectId, result.registration.folderUrl);
+    cleanupRegisteredTempDocuments_(docs);
+
+    return apiOk_({
+      sessionId: sessionId,
+      caseId: result.registration.projectId,
+      isNew: result.registration.isNew,
+      matchType: result.registration.matchType,
+      needsCheck: result.registration.needsCheck,
+      folderUrl: result.registration.folderUrl,
+      savedFiles: result.registration.savedFiles || {},
+      message: '案件ID ' + result.registration.projectId + ' で正式登録できたにゃん！🐈✨'
+    });
+  } catch (e) {
+    Logger.log('api_registerPhase2Case error: ' + e.stack);
+    return apiError_('案件登録でエラーにゃん：' + e.message);
+  }
+}
+
+
+// ── API④：「もっと詳しく調べるにゃん」 ─────────────────
+
+function api_proceedToDetailExtraction(sessionId) {
+  try {
+    if (!sessionId) return apiError_('セッションIDが指定されていないにゃん。');
+    const sheet = getOrCreateExtractSessionSheet_();
+    const found = findExtractSessionRow_(sheet, sessionId);
+    if (!found) return apiError_('セッションが見つからないにゃん。');
+
+    const status = String(found.rowValues[found.headerMap['ステータス'] - 1] || '');
+    if (!['pending_review', 'phase2_draft'].includes(status)) {
+      return apiError_('このセッションは既に「' + status + '」状態にゃん。');
+    }
+
+    const detail = buildPhase2Detail_(sessionId);
+    return apiOk_({
+      sessionId: sessionId,
+      detail: detail,
+      documentCount: detail.documents.length,
+      message: detail.documents.length + '件の資料から案件カルテを作ったにゃん！内容を確認・修正してにゃん🐈',
+    });
+  } catch (e) {
+    Logger.log('api_proceedToDetailExtraction error: ' + e.stack);
+    return apiError_('詳細抽出でエラーにゃん：' + e.message);
+  }
+}
+
+// ── API⑤：キャンセル（同じセッションの全資料を破棄） ──────
+
+function api_cancelExtractSession(sessionId) {
+  try {
+    if (!sessionId) return apiError_('セッションIDが指定されていないにゃん。');
+    const sessionSheet = getOrCreateExtractSessionSheet_();
+    const found = findExtractSessionRow_(sessionSheet, sessionId);
+    if (!found) return apiError_('セッションが見つからないにゃん（既に処理済みの可能性）。');
+
+    const docSheet = getOrCreateExtractDocumentSheet_();
+    const docMap = getExtractHeaderMap_(docSheet);
+    const docs = getExtractDocuments_(sessionId, false);
+    const phase2JsonId = found.rowValues[found.headerMap['Phase2_JSONファイルID'] - 1];
+    trashFileIfExists_(phase2JsonId);
+
+    docs.forEach(doc => {
+      trashFileIfExists_(doc.pdfFileId);
+      trashFileIfExists_(doc.ocrDocId);
+      if (doc.row) {
+        docSheet.getRange(doc.row, docMap['ステータス']).setValue('cancelled');
+        docSheet.getRange(doc.row, docMap['備考']).setValue('キャンセル：' + new Date());
+      }
+    });
+
+    // Ver1/旧セッションも安全に片付けるための後方互換
+    if (!docs.length) {
+      trashFileIfExists_(found.rowValues[found.headerMap['PDFファイルID'] - 1]);
+      trashFileIfExists_(found.rowValues[found.headerMap['OCR DocID'] - 1]);
+    }
+
+    sessionSheet.getRange(found.row, found.headerMap['ステータス']).setValue('cancelled');
+    sessionSheet.getRange(found.row, found.headerMap['備考']).setValue(
+      docs.length + '資料をキャンセル：' + new Date()
+    );
+
+    return apiOk_({ cancelled: true, documentCount: docs.length });
+  } catch (e) {
+    return apiError_('キャンセル処理でエラーにゃん：' + e.message);
+  }
+}
+
+// ── メンテナンス ─────────────────────────────────────
+
+function cleanupOrphanedExtractSessions(hoursThreshold) {
+  const hours = Number(hoursThreshold) || 24;
+  const thresholdMs = hours * 60 * 60 * 1000;
+  const sessionSheet = getOrCreateExtractSessionSheet_();
+  const lastRow = sessionSheet.getLastRow();
+  if (lastRow < 2) {
+    Logger.log('セッションなし');
+    return;
+  }
+
+  const map = getExtractHeaderMap_(sessionSheet);
+  const values = sessionSheet.getRange(2, 1, lastRow - 1, sessionSheet.getLastColumn()).getValues();
+  const now = Date.now();
+  let cleanedSessions = 0;
+  let cleanedDocuments = 0;
+
+  values.forEach((row, index) => {
+    const status = String(row[map['ステータス'] - 1] || '');
+    const createdAt = row[map['作成日時'] - 1];
+    if (status !== 'pending_review' || !(createdAt instanceof Date)) return;
+    if ((now - createdAt.getTime()) <= thresholdMs) return;
+
+    const sessionId = String(row[map['セッションID'] - 1] || '');
+    const docs = getExtractDocuments_(sessionId, false);
+    const docSheet = getOrCreateExtractDocumentSheet_();
+    const docMap = getExtractHeaderMap_(docSheet);
+    docs.forEach(doc => {
+      trashFileIfExists_(doc.pdfFileId);
+      trashFileIfExists_(doc.ocrDocId);
+      docSheet.getRange(doc.row, docMap['ステータス']).setValue('cleaned_up');
+      docSheet.getRange(doc.row, docMap['備考']).setValue('自動整理：' + new Date());
+      cleanedDocuments++;
+    });
+
+    if (!docs.length) {
+      trashFileIfExists_(row[map['PDFファイルID'] - 1]);
+      trashFileIfExists_(row[map['OCR DocID'] - 1]);
+    }
+
+    sessionSheet.getRange(index + 2, map['ステータス']).setValue('cleaned_up');
+    sessionSheet.getRange(index + 2, map['備考']).setValue(
+      docs.length + '資料を整理：' + new Date()
+    );
+    cleanedSessions++;
+  });
+
+  Logger.log('整理完了：' + cleanedSessions + 'セッション / ' + cleanedDocuments + '資料');
+}
+
+// ── 動作確認用 ───────────────────────────────────────
+
+function testExtractSchema() {
+  const sheet = getOrCreateExtractSessionSheet_();
+  Logger.log('一時抽出セッション準備OK：' + sheet.getName());
+  const docSheet = getOrCreateExtractDocumentSheet_();
+  Logger.log('一時抽出資料準備OK：' + docSheet.getName());
+  const folder = getOrCreateTempFolder_();
+  Logger.log('一時フォルダ準備OK：' + folder.getName() + ' / ' + folder.getId());
+}
+
+function testExtractLogic_() {
+  const sample = [
+    'オープンカウンター方式による見積り合わせに付する事項',
+    '（1）件名 封筒2000枚購入',
+    '（2）参加資格 予算決算及び会計令第70条及び第71条に該当しない者であること。',
+    '見積り合わせ時において指名停止を受けている期間中の者でないこと。',
+    '納期 令和8年8月27日までとする。',
+    '発注元 九州地方整備局北九州港湾・空港整備事務所長 鈴木賢治',
+  ].join('\n');
+  Logger.log(JSON.stringify(extractKey3_(sample, '公告.pdf'), null, 2));
+}
