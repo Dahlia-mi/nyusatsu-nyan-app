@@ -23,6 +23,15 @@
 const EXTRACT_SESSION_SHEET_NAME = '一時抽出セッション';
 const EXTRACT_DOCUMENT_SHEET_NAME = '一時抽出資料';
 const EXTRACT_TEMP_FOLDER_NAME = '入札にゃんOS_一時PDF';
+const OCR_CORRECTION_LOG_SHEET_NAME = 'OCR修正ログ';
+const OCR_CORRECTION_LOG_HEADERS = [
+  'logId', 'caseId', 'sessionId', 'fieldKey', 'originalText',
+  'extractedValue', 'correctedValue', 'learningType', 'agencyType',
+  'agencyName', 'sourceLabel', 'sourceText', 'reason', 'createdAt',
+];
+const LEARNING_TARGET_FIELD_KEYS = [
+  'delivery.place', 'delivery.date', 'submission.deadline', 'submission.method',
+];
 const EXTRACT_SESSION_HEADERS = [
   'セッションID', '作成日時', 'ステータス', '元ファイル名',
   'PDFファイルID', 'OCR DocID', '資料種別',
@@ -2032,7 +2041,17 @@ function savePhase2Json_(sessionId, detail) {
 function sanitizePhase2Payload_(payload) {
   const p = payload || {};
   const cleanText = v => truncate_(String(v || ''), 4000);
+  const truncateLearning = function(value, limit) {
+    const text = String(value || '');
+    return text.length > limit ? text.slice(0, Math.max(0, limit - 1)) + '…' : text;
+  };
+  const cleanLearningValue = v => truncateLearning(v, 1000);
+  const cleanLearningLabel = v => truncateLearning(v, 200);
+  const cleanLearningSource = v => truncateLearning(v, 500);
+  const cleanLearningReason = v => truncateLearning(v, 300);
   const understanding = p.documentUnderstanding || {};
+  const learningContext = p.learningContext || {};
+  const learningFields = learningContext.fields || {};
   const cleanItems = Array.isArray(p.items) ? p.items.slice(0, 50).map(i => ({
     name: cleanText(i.name),
     quantity: cleanText(i.quantity),
@@ -2099,7 +2118,191 @@ function sanitizePhase2Payload_(payload) {
       out[cleanText(key)] = cleanText(p.fieldReasons[key]);
       return out;
     }, {}),
+    learningContext: {
+      agencyName: cleanLearningReason(learningContext.agencyName),
+      fields: LEARNING_TARGET_FIELD_KEYS.reduce(function(out, fieldKey) {
+        const field = learningFields[fieldKey] || {};
+        out[fieldKey] = {
+          originalText: cleanLearningValue(field.originalText),
+          extractedValue: cleanLearningValue(field.extractedValue),
+          correctedValue: cleanLearningValue(field.correctedValue),
+          sourceLabel: cleanLearningLabel(field.sourceLabel),
+          sourceText: cleanLearningSource(field.sourceText),
+          reason: cleanLearningReason(field.reason),
+        };
+        return out;
+      }, {}),
+    },
   };
+}
+
+function normalizeLearningComparisonText_(value) {
+  let text = String(value == null ? '' : value);
+  if (typeof text.normalize === 'function') text = text.normalize('NFKC');
+  return text.replace(/[\s\u3000]+/g, ' ').trim();
+}
+
+function normalizeSubmissionMethodsForComparison_(value) {
+  const text = normalizeLearningComparisonText_(value)
+    .replace(/電子\s*メール/gi, '電子メール')
+    .replace(/E\s*メール/gi, 'Eメール');
+  const known = [];
+  const pattern = /電子メール|Eメール|FAX|ファクス|郵送|持参|窓口|電子調達|オンライン|メール/gi;
+  let match;
+  while ((match = pattern.exec(text)) !== null) known.push(match[0].toUpperCase());
+  const residual = text.replace(pattern, ' ')
+    .replace(/[\s,，、・;；:：/／|｜]+/g, ' ')
+    .trim();
+  const tokens = known.concat(residual ? [residual] : []);
+  return Array.from(new Set(tokens)).sort().join('|');
+}
+
+function isMeaningfulLearningChange_(fieldKey, extractedValue, correctedValue) {
+  const before = fieldKey === 'submission.method'
+    ? normalizeSubmissionMethodsForComparison_(extractedValue)
+    : normalizeLearningComparisonText_(extractedValue);
+  const after = fieldKey === 'submission.method'
+    ? normalizeSubmissionMethodsForComparison_(correctedValue)
+    : normalizeLearningComparisonText_(correctedValue);
+  return before !== after;
+}
+
+function learningEditDistance_(a, b) {
+  const left = Array.from(normalizeLearningComparisonText_(a));
+  const right = Array.from(normalizeLearningComparisonText_(b));
+  const previous = right.map(function(_, index) { return index + 1; });
+  previous.unshift(0);
+  for (let i = 1; i <= left.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= right.length; j++) {
+      current[j] = Math.min(
+        current[j - 1] + 1,
+        previous[j] + 1,
+        previous[j - 1] + (left[i - 1] === right[j - 1] ? 0 : 1)
+      );
+    }
+    for (let j = 0; j < current.length; j++) previous[j] = current[j];
+  }
+  return previous[right.length];
+}
+
+function classifyLearningCorrection_(fieldKey, field) {
+  const before = normalizeLearningComparisonText_(field.extractedValue);
+  const after = normalizeLearningComparisonText_(field.correctedValue);
+  if (!before || !after) return 'value_correction';
+  if (fieldKey === 'delivery.date' || fieldKey === 'submission.deadline') {
+    return 'value_correction';
+  }
+
+  const distance = learningEditDistance_(before, after);
+  if (before.length >= 3 && after.length >= 3 && distance === 1) {
+    return 'ocr_correction';
+  }
+
+  const hasHeadingEvidence = Boolean(normalizeLearningComparisonText_(field.sourceLabel)) &&
+    /見出し|ラベル|項目名|同義|類義/.test(String(field.reason || ''));
+  if (hasHeadingEvidence) return 'synonym';
+  return 'value_correction';
+}
+
+function detectAgencyType_(agencyName) {
+  const name = normalizeLearningComparisonText_(agencyName);
+  if (!name) return '未判定';
+  if (/(?:陸上|海上|航空)自衛隊|駐屯地|基地/.test(name)) return '自衛隊';
+  if (/都|道|府|県|市|区|町|村/.test(name)) return '自治体';
+  if (/省|庁|局|裁判所|国立|独立行政法人/.test(name)) return '国・独立行政法人';
+  return 'その他';
+}
+
+function buildOcrCorrectionLogs_(caseId, sessionId, clean) {
+  if (!String(caseId || '').trim() || !String(sessionId || '').trim()) {
+    throw new Error('修正ログ識別子が不足しています');
+  }
+  const context = clean.learningContext || {};
+  const fields = context.fields || {};
+  const agencyName = String(context.agencyName || clean.basic && clean.basic.org && clean.basic.org.value || '');
+  const agencyType = detectAgencyType_(agencyName);
+  const createdAt = new Date().toISOString();
+
+  return LEARNING_TARGET_FIELD_KEYS.reduce(function(logs, fieldKey) {
+    const field = fields[fieldKey] || {};
+    if (!isMeaningfulLearningChange_(fieldKey, field.extractedValue, field.correctedValue)) return logs;
+    logs.push({
+      logId: Utilities.getUuid(),
+      caseId: String(caseId || ''),
+      sessionId: String(sessionId || ''),
+      fieldKey: fieldKey,
+      originalText: String(field.originalText || ''),
+      extractedValue: String(field.extractedValue || ''),
+      correctedValue: String(field.correctedValue || ''),
+      learningType: classifyLearningCorrection_(fieldKey, field),
+      agencyType: agencyType,
+      agencyName: agencyName,
+      sourceLabel: String(field.sourceLabel || ''),
+      sourceText: String(field.sourceText || ''),
+      reason: String(field.reason || ''),
+      createdAt: createdAt,
+    });
+    return logs;
+  }, []);
+}
+
+function getOrCreateOcrCorrectionLogSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(OCR_CORRECTION_LOG_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(OCR_CORRECTION_LOG_SHEET_NAME);
+  const currentHeaders = sheet.getLastColumn() > 0
+    ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(function(value) {
+        return String(value || '').trim();
+      })
+    : [];
+  OCR_CORRECTION_LOG_HEADERS.forEach(function(header) {
+    if (!currentHeaders.includes(header)) {
+      sheet.getRange(1, sheet.getLastColumn() + 1).setValue(header);
+      currentHeaders.push(header);
+    }
+  });
+  const finalHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]
+    .map(function(value) { return String(value || '').trim(); });
+  OCR_CORRECTION_LOG_HEADERS.forEach(function(header) {
+    const count = finalHeaders.filter(function(value) { return value === header; }).length;
+    if (count !== 1) throw new Error('OCR修正ログのヘッダーが競合しています: ' + header);
+  });
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function escapeOcrCorrectionLogCell_(value) {
+  const text = String(value == null ? '' : value);
+  return /^[=+\-@]/.test(text) ? "'" + text : text;
+}
+
+function saveOcrCorrectionLogs_(logs) {
+  if (!Array.isArray(logs) || !logs.length) return 0;
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) throw new Error('OCR修正ログの書き込みロックを取得できませんでした');
+  try {
+    const sheet = getOrCreateOcrCorrectionLogSheet_();
+    const headerMap = {};
+    sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].forEach(function(header, index) {
+      headerMap[String(header || '').trim()] = index;
+    });
+    const rows = logs.map(function(log) {
+      const row = new Array(sheet.getLastColumn()).fill('');
+      OCR_CORRECTION_LOG_HEADERS.forEach(function(header) {
+        if (headerMap[header] != null) {
+          row[headerMap[header]] = escapeOcrCorrectionLogCell_(log[header]);
+        }
+      });
+      return row;
+    });
+    const targetRange = sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, sheet.getLastColumn());
+    targetRange.setNumberFormat('@');
+    targetRange.setValues(rows);
+    return rows.length;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function api_savePhase2Draft(sessionId, payload) {
@@ -2288,6 +2491,15 @@ function api_registerPhase2Case(sessionId, payload) {
 
     const additionalFiles = copyAdditionalSessionDocuments_(docs, result);
     result = finalizeRegisteredCaseJson_(result, docs, additionalFiles);
+    let learningLogCount = 0;
+    const learningWarnings = [];
+    try {
+      const learningLogs = buildOcrCorrectionLogs_(result.registration.projectId, sessionId, clean);
+      learningLogCount = saveOcrCorrectionLogs_(learningLogs);
+    } catch (learningError) {
+      Logger.log('OCR correction log warning: ' + learningError.stack);
+      learningWarnings.push('修正ログを保存できませんでした。案件登録は完了しています。');
+    }
     markExtractSessionRegistered_(sessionId, result.registration.projectId, result.registration.folderUrl);
     cleanupRegisteredTempDocuments_(docs);
 
@@ -2299,6 +2511,8 @@ function api_registerPhase2Case(sessionId, payload) {
       needsCheck: result.registration.needsCheck,
       folderUrl: result.registration.folderUrl,
       savedFiles: result.registration.savedFiles || {},
+      learningLogCount: learningLogCount,
+      learningWarnings: learningWarnings,
       message: '案件ID ' + result.registration.projectId + ' で正式登録できたにゃん！🐈✨'
     });
   } catch (e) {

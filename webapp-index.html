@@ -605,6 +605,7 @@ var state = {
   extractSession: null,  // Phase1 追加：資料でチェック・現在のセッションID
   extractDocuments: [],   // Ver2.0：同じ案件に紐づく資料一覧
   phase2Detail: null,      // Ver2.2-Final：編集中の案件カルテ
+  phase2OriginalSnapshot: null, // Phase3.2A：対象4項目の編集前スナップショット
 };
 
 // ── ユーティリティ ──────────────────────────────
@@ -1060,6 +1061,8 @@ function handleAdditionalPdfSelected(e) {
 function resetExtractView() {
   state.extractSession = null;
   state.extractDocuments = [];
+  state.phase2Detail = null;
+  state.phase2OriginalSnapshot = null;
   $('extractFileInput').value = '';
   $('extractAddFileInput').value = '';
   $('extractFileName').textContent = '';
@@ -1108,6 +1111,69 @@ function proceedToDetail(groupNumber) {
 
 function valueOfField(obj) {
   return obj && typeof obj === 'object' ? (obj.value || '') : (obj || '');
+}
+
+function buildPhase2OriginalSnapshot(detail) {
+  var d = detail || {};
+  var evidence = d.learningEvidence || {};
+  var reasons = d.fieldReasons || {};
+  var definitions = {
+    'delivery.place': {
+      value: valueOfField(d.delivery && d.delivery.place),
+      reason: reasons.deliveryPlace || ''
+    },
+    'delivery.date': {
+      value: valueOfField(d.delivery && d.delivery.deadline),
+      reason: reasons.deliveryDeadline || ''
+    },
+    'submission.deadline': {
+      value: valueOfField(d.submission && d.submission.deadline),
+      reason: reasons.submissionDeadline || ''
+    },
+    'submission.method': {
+      value: valueOfField(d.submission && d.submission.method),
+      reason: reasons.submissionMethod || ''
+    }
+  };
+  var fields = {};
+  Object.keys(definitions).forEach(function(fieldKey) {
+    var definition = definitions[fieldKey];
+    var source = evidence[fieldKey] || {};
+    fields[fieldKey] = {
+      originalText: source.originalText != null ? String(source.originalText) : String(definition.value || ''),
+      extractedValue: String(definition.value || ''),
+      sourceLabel: String(source.sourceLabel || ''),
+      sourceText: String(source.sourceText || ''),
+      reason: String(source.reason || definition.reason || '')
+    };
+  });
+  return {
+    agencyName: valueOfField(d.basic && d.basic.org),
+    fields: fields
+  };
+}
+
+function collectPhase2LearningContext() {
+  var snapshot = state.phase2OriginalSnapshot || {agencyName:'', fields:{}};
+  var currentValues = {
+    'delivery.place': $('p2DeliveryPlace').value,
+    'delivery.date': $('p2DeliveryDeadline').value,
+    'submission.deadline': $('p2SubmissionDeadline').value,
+    'submission.method': $('p2SubmissionMethod').value
+  };
+  var fields = {};
+  Object.keys(currentValues).forEach(function(fieldKey) {
+    var original = snapshot.fields[fieldKey] || {};
+    fields[fieldKey] = {
+      originalText: String(original.originalText || ''),
+      extractedValue: String(original.extractedValue || ''),
+      correctedValue: String(currentValues[fieldKey] == null ? '' : currentValues[fieldKey]),
+      sourceLabel: String(original.sourceLabel || ''),
+      sourceText: String(original.sourceText || ''),
+      reason: String(original.reason || '')
+    };
+  });
+  return {agencyName:String(snapshot.agencyName || ''), fields:fields};
 }
 
 function renderPhase2Items(items) {
@@ -1242,6 +1308,7 @@ function renderPhase2Detail(data) {
   var previousGroup = state.phase2Detail && state.phase2Detail.documentUnderstanding
     ? state.phase2Detail.documentUnderstanding.groupNumber : '';
   state.phase2Detail = d;
+  state.phase2OriginalSnapshot = buildPhase2OriginalSnapshot(d);
   $('phase2Intro').textContent = data.message || '案件カルテを作ったにゃん。内容を確認してにゃん🐈';
 
   var du = d.documentUnderstanding || {};
@@ -1372,7 +1439,8 @@ function collectPhase2Payload() {
     warnings: d.warnings || [],
     documents: d.documents || state.extractDocuments || [],
     documentUnderstanding: d.documentUnderstanding || {},
-    fieldReasons: d.fieldReasons || {}
+    fieldReasons: d.fieldReasons || {},
+    learningContext: collectPhase2LearningContext()
   };
 }
 
@@ -1392,6 +1460,9 @@ function registerPhase2Case() {
     var message = '<strong>' + escapeHtml(data.message || '正式登録できたにゃん！') + '</strong>';
     if (data.folderUrl) {
       message += '<br><br><a href="' + escapeHtml(data.folderUrl) + '" target="_blank" rel="noopener">📁 案件フォルダを開く</a>';
+    }
+    if (data.learningWarnings && data.learningWarnings.length) {
+      message += '<br><br><span class="hint">⚠️ ' + escapeHtml(data.learningWarnings.join('／')) + '</span>';
     }
     $('extractProceedMsg').innerHTML = message;
     showView('extract');
