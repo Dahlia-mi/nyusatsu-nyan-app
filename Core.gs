@@ -422,7 +422,18 @@ function syncCaseJsonToCaseManagement_(caseJson, registration) {
     }
   }
   const isNewRow = !targetRow;
-  if (isNewRow) targetRow = Math.max(2, lastRow + 1);
+  if (isNewRow) {
+    targetRow = Math.max(2, lastRow + 1);
+    if (lastRow >= 2) {
+      const caseNames = sheet.getRange(2, 2, lastRow - 1, 1).getDisplayValues();
+      for (let i = 0; i < caseNames.length; i++) {
+        if (String(caseNames[i][0] || '').trim() === '') {
+          targetRow = i + 2;
+          break;
+        }
+      }
+    }
+  }
 
   const item = Array.isArray(data.items) && data.items.length ? data.items[0] : {};
   const folderUrl = String(data.source.folderUrl || (registration && registration.folderUrl) || '').trim();
