@@ -29,6 +29,19 @@ const OCR_CORRECTION_LOG_HEADERS = [
   'extractedValue', 'correctedValue', 'learningType', 'agencyType',
   'agencyName', 'sourceLabel', 'sourceText', 'reason', 'createdAt',
 ];
+const LEARNING_CANDIDATE_SHEET_NAME = '学習候補';
+const LEARNING_CANDIDATE_HEADERS = [
+  'candidateKey', 'candidateId', 'firstLogId', 'term', 'correctedTerm',
+  'semanticKey', 'learningType', 'agencyType', 'agencyName', 'status',
+  'createdAt', 'updatedAt', 'lastCaseId', 'lastLogId',
+];
+const LEARNING_DECISION_SHEET_NAME = '学習判断履歴';
+const LEARNING_DECISION_HEADERS = [
+  'decisionId', 'candidateId', 'logId', 'candidateKey', 'caseId',
+  'fieldKey', 'decision', 'term', 'correctedTerm', 'learningType',
+  'agencyType', 'agencyName', 'createdAt',
+];
+const LEARNING_DECISIONS = ['register', 'once', 'ignore'];
 const LEARNING_TARGET_FIELD_KEYS = [
   'delivery.place', 'delivery.date', 'submission.deadline', 'submission.method',
 ];
@@ -2305,6 +2318,248 @@ function saveOcrCorrectionLogs_(logs) {
   }
 }
 
+function semanticFieldLabel_(fieldKey) {
+  return {
+    'delivery.place': '納品場所',
+    'delivery.date': '納期',
+    'submission.deadline': '提出期限',
+    'submission.method': '提出方法',
+  }[fieldKey] || '';
+}
+
+function buildLearningReviewCandidateFromLog_(log) {
+  log = log || {};
+  const logId = String(log.logId || '').trim();
+  const caseId = String(log.caseId || '').trim();
+  const fieldKey = String(log.fieldKey || '').trim();
+  const learningType = String(log.learningType || '').trim();
+  if (!logId || !caseId || !LEARNING_TARGET_FIELD_KEYS.includes(fieldKey)) return null;
+
+  let term = '';
+  let correctedTerm = '';
+  if (learningType === 'ocr_correction') {
+    term = normalizeLearningComparisonText_(log.extractedValue);
+    correctedTerm = normalizeLearningComparisonText_(log.correctedValue);
+    if (!term || !correctedTerm || learningEditDistance_(term, correctedTerm) !== 1) return null;
+  } else if (learningType === 'synonym') {
+    const sourceLabel = normalizeLearningComparisonText_(log.sourceLabel);
+    if (!sourceLabel || !/見出し|ラベル|項目名|同義|類義/.test(String(log.reason || ''))) return null;
+    term = semanticFieldLabel_(fieldKey);
+    correctedTerm = sourceLabel;
+  } else {
+    return null;
+  }
+
+  const agencyType = normalizeLearningComparisonText_(log.agencyType) || '未判定';
+  const candidateKey = JSON.stringify([fieldKey, learningType, agencyType, term, correctedTerm]
+    .map(normalizeLearningComparisonText_));
+  return {
+    candidateId: logId,
+    logId: logId,
+    caseId: caseId,
+    fieldKey: fieldKey,
+    semanticKey: fieldKey,
+    learningType: learningType,
+    term: term,
+    correctedTerm: correctedTerm,
+    agencyType: agencyType,
+    agencyName: String(log.agencyName || ''),
+    candidateKey: candidateKey,
+  };
+}
+
+function buildLearningReviewCandidates_(logs) {
+  return (Array.isArray(logs) ? logs : [])
+    .map(buildLearningReviewCandidateFromLog_)
+    .filter(Boolean)
+    .map(function(candidate) {
+      return {
+        candidateId: candidate.candidateId,
+        logId: candidate.logId,
+        caseId: candidate.caseId,
+        fieldKey: candidate.fieldKey,
+        semanticKey: candidate.semanticKey,
+        learningType: candidate.learningType,
+        term: candidate.term,
+        correctedTerm: candidate.correctedTerm,
+        agencyType: candidate.agencyType,
+      };
+    });
+}
+
+function getValidatedLearningHeaderMap_(sheet, requiredHeaders, sheetName) {
+  if (!sheet || sheet.getLastColumn() < 1) throw new Error(sheetName + 'のヘッダーがありません');
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]
+    .map(function(value) { return String(value || '').trim(); });
+  const map = {};
+  requiredHeaders.forEach(function(header) {
+    const positions = [];
+    headers.forEach(function(value, index) { if (value === header) positions.push(index); });
+    if (positions.length !== 1) throw new Error(sheetName + 'のヘッダーが競合しています: ' + header);
+    map[header] = positions[0];
+  });
+  return map;
+}
+
+function getOrCreateLearningSheet_(sheetName, headers) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) sheet = ss.insertSheet(sheetName);
+  const currentHeaders = sheet.getLastColumn() > 0
+    ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]
+      .map(function(value) { return String(value || '').trim(); })
+    : [];
+  headers.forEach(function(header) {
+    if (!currentHeaders.includes(header)) {
+      sheet.getRange(1, sheet.getLastColumn() + 1).setValue(header);
+      currentHeaders.push(header);
+    }
+  });
+  getValidatedLearningHeaderMap_(sheet, headers, sheetName);
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function learningRowToObject_(headers, row) {
+  const out = {};
+  headers.forEach(function(header, index) { out[String(header || '').trim()] = row[index]; });
+  return out;
+}
+
+function findOcrCorrectionLogForDecision_(caseId, logId) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(OCR_CORRECTION_LOG_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) throw new Error('対象のOCR修正ログが見つかりません');
+  const headerMap = getValidatedLearningHeaderMap_(sheet, OCR_CORRECTION_LOG_HEADERS, OCR_CORRECTION_LOG_SHEET_NAME);
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][headerMap.logId] || '').trim() === logId &&
+        String(rows[i][headerMap.caseId] || '').trim() === caseId) {
+      return learningRowToObject_(headers, rows[i]);
+    }
+  }
+  throw new Error('案件と一致するOCR修正ログが見つかりません');
+}
+
+function findLearningDecisionByLogId_(sheet, logId) {
+  if (!sheet || sheet.getLastRow() < 2) return null;
+  const headerMap = getValidatedLearningHeaderMap_(sheet, LEARNING_DECISION_HEADERS, LEARNING_DECISION_SHEET_NAME);
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][headerMap.logId] || '').trim() === logId) {
+      return learningRowToObject_(headers, rows[i]);
+    }
+  }
+  return null;
+}
+
+function appendLearningObject_(sheet, headers, value) {
+  const headerMap = getValidatedLearningHeaderMap_(sheet, headers, sheet.getName());
+  const row = new Array(sheet.getLastColumn()).fill('');
+  headers.forEach(function(header) {
+    row[headerMap[header]] = escapeOcrCorrectionLogCell_(value[header]);
+  });
+  const range = sheet.getRange(sheet.getLastRow() + 1, 1, 1, sheet.getLastColumn());
+  range.setNumberFormat('@');
+  range.setValues([row]);
+}
+
+function upsertLearningCandidate_(candidate) {
+  const sheet = getOrCreateLearningSheet_(LEARNING_CANDIDATE_SHEET_NAME, LEARNING_CANDIDATE_HEADERS);
+  const headerMap = getValidatedLearningHeaderMap_(sheet, LEARNING_CANDIDATE_HEADERS, LEARNING_CANDIDATE_SHEET_NAME);
+  const now = new Date().toISOString();
+  if (sheet.getLastRow() >= 2) {
+    const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i][headerMap.candidateKey] || '') === candidate.candidateKey) {
+        const rowNumber = i + 2;
+        ['updatedAt', 'lastCaseId', 'lastLogId'].forEach(function(header) {
+          const range = sheet.getRange(rowNumber, headerMap[header] + 1);
+          range.setNumberFormat('@');
+          range.setValue(escapeOcrCorrectionLogCell_(
+            header === 'updatedAt' ? now : (header === 'lastCaseId' ? candidate.caseId : candidate.logId)
+          ));
+        });
+        return { created: false };
+      }
+    }
+  }
+  appendLearningObject_(sheet, LEARNING_CANDIDATE_HEADERS, {
+    candidateKey: candidate.candidateKey,
+    candidateId: candidate.candidateId,
+    firstLogId: candidate.logId,
+    term: candidate.term,
+    correctedTerm: candidate.correctedTerm,
+    semanticKey: candidate.semanticKey,
+    learningType: candidate.learningType,
+    agencyType: candidate.agencyType,
+    agencyName: candidate.agencyName,
+    status: 'candidate',
+    createdAt: now,
+    updatedAt: now,
+    lastCaseId: candidate.caseId,
+    lastLogId: candidate.logId,
+  });
+  return { created: true };
+}
+
+function appendLearningDecision_(sheet, candidate, decision) {
+  appendLearningObject_(sheet, LEARNING_DECISION_HEADERS, {
+    decisionId: Utilities.getUuid(),
+    candidateId: candidate.candidateId,
+    logId: candidate.logId,
+    candidateKey: candidate.candidateKey,
+    caseId: candidate.caseId,
+    fieldKey: candidate.fieldKey,
+    decision: decision,
+    term: candidate.term,
+    correctedTerm: candidate.correctedTerm,
+    learningType: candidate.learningType,
+    agencyType: candidate.agencyType,
+    agencyName: candidate.agencyName,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+function api_recordLearningDecision(caseId, decisionPayload) {
+  const safeCaseId = String(caseId || '').trim();
+  const payload = decisionPayload || {};
+  const candidateId = String(payload.candidateId || '').trim();
+  const decision = String(payload.decision || '').trim();
+  if (!safeCaseId || safeCaseId.length > 100 || !candidateId || candidateId.length > 100) {
+    return apiError_('学習候補を特定できなかったにゃん。');
+  }
+  if (!LEARNING_DECISIONS.includes(decision)) return apiError_('学習候補の操作が正しくないにゃん。');
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) return apiError_('学習候補を記録できなかったにゃん。案件登録は完了しています。');
+  try {
+    const log = findOcrCorrectionLogForDecision_(safeCaseId, candidateId);
+    const candidate = buildLearningReviewCandidateFromLog_(log);
+    if (!candidate || candidate.caseId !== safeCaseId) return apiError_('この修正は学習候補の対象ではないにゃん。');
+
+    const decisionSheet = getOrCreateLearningSheet_(LEARNING_DECISION_SHEET_NAME, LEARNING_DECISION_HEADERS);
+    const existing = findLearningDecisionByLogId_(decisionSheet, candidate.logId);
+    if (existing) {
+      return apiOk_({
+        candidateId: candidate.candidateId,
+        decision: String(existing.decision || ''),
+        alreadyRecorded: true,
+      });
+    }
+
+    if (decision === 'register') upsertLearningCandidate_(candidate);
+    appendLearningDecision_(decisionSheet, candidate, decision);
+    return apiOk_({candidateId: candidate.candidateId, decision: decision, alreadyRecorded: false});
+  } catch (e) {
+    Logger.log('api_recordLearningDecision error: ' + e.stack);
+    return apiError_('学習候補を記録できなかったにゃん。案件登録は完了しています。');
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function api_savePhase2Draft(sessionId, payload) {
   try {
     if (!sessionId) return apiError_('セッションIDがないにゃん。');
@@ -2492,10 +2747,14 @@ function api_registerPhase2Case(sessionId, payload) {
     const additionalFiles = copyAdditionalSessionDocuments_(docs, result);
     result = finalizeRegisteredCaseJson_(result, docs, additionalFiles);
     let learningLogCount = 0;
+    let learningReview = [];
     const learningWarnings = [];
     try {
       const learningLogs = buildOcrCorrectionLogs_(result.registration.projectId, sessionId, clean);
       learningLogCount = saveOcrCorrectionLogs_(learningLogs);
+      if (learningLogCount === learningLogs.length) {
+        learningReview = buildLearningReviewCandidates_(learningLogs);
+      }
     } catch (learningError) {
       Logger.log('OCR correction log warning: ' + learningError.stack);
       learningWarnings.push('修正ログを保存できませんでした。案件登録は完了しています。');
@@ -2513,6 +2772,7 @@ function api_registerPhase2Case(sessionId, payload) {
       savedFiles: result.registration.savedFiles || {},
       learningLogCount: learningLogCount,
       learningWarnings: learningWarnings,
+      learningReview: learningReview,
       message: '案件ID ' + result.registration.projectId + ' で正式登録できたにゃん！🐈✨'
     });
   } catch (e) {

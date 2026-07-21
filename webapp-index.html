@@ -350,6 +350,32 @@
     border:1px solid var(--line); background:#fff; color:var(--ink-soft);
     border-radius:8px; padding:7px 10px; font-size:12px; font-weight:700;
   }
+  .learning-review-panel {
+    margin: 14px 0; text-align: left;
+  }
+  .learning-review-heading { margin: 0 0 4px; font-size: 17px; color: var(--mauve-deep); }
+  .learning-review-help { margin: 0 0 10px; color: var(--ink-soft); font-size: 13px; }
+  .learning-review-card {
+    border: 1px solid var(--line); border-radius: 12px; background: #fff;
+    padding: 13px; margin-bottom: 10px; box-shadow: 0 1px 2px rgba(58,37,49,.05);
+  }
+  .learning-review-type { font-size: 12px; font-weight: 700; color: var(--mauve-deep); }
+  .learning-review-change { margin: 5px 0; font-weight: 700; overflow-wrap: anywhere; }
+  .learning-review-question { margin: 0 0 10px; font-size: 14px; }
+  .learning-review-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; }
+  .learning-review-action {
+    min-height: 44px; border: 1px solid var(--line); border-radius: 9px;
+    background: #fff; color: var(--ink); padding: 8px 6px; font-size: 12px; font-weight: 700;
+  }
+  .learning-review-action[data-decision="register"] { background: var(--mauve); color: #fff; border-color: var(--mauve); }
+  .learning-review-action:disabled { opacity: .55; }
+  .learning-review-status { margin-top: 9px; font-size: 13px; white-space: pre-line; }
+  .learning-review-status.is-success { color: var(--ok); }
+  .learning-review-status.is-error { color: var(--err); }
+  @media (max-width: 460px) {
+    .learning-review-actions { grid-template-columns: 1fr; }
+    .learning-review-action { width: 100%; font-size: 14px; }
+  }
   .tag-list { display:flex; flex-wrap:wrap; gap:6px; }
   .tag-chip {
     background:var(--mauve-pale); color:var(--mauve-deep);
@@ -497,6 +523,11 @@
     <div id="extractProceedPane" style="display:none;">
       <div class="extract-result-card" style="text-align:center;">
         <p id="extractProceedMsg" style="margin:0;">—</p>
+      </div>
+      <div class="learning-review-panel" id="learningReviewPanel" style="display:none;">
+        <h3 class="learning-review-heading">にゃんちゃんに教える？</h3>
+        <p class="learning-review-help">今回の修正を、今後の読み取りに活かせるか確認してほしいにゃん</p>
+        <div id="learningReviewList"></div>
       </div>
       <a href="#" class="btn-secondary" id="btnBackFromProceed">案件一覧へ戻る</a>
     </div>
@@ -1063,6 +1094,8 @@ function resetExtractView() {
   state.extractDocuments = [];
   state.phase2Detail = null;
   state.phase2OriginalSnapshot = null;
+  $('learningReviewPanel').style.display = 'none';
+  $('learningReviewList').innerHTML = '';
   $('extractFileInput').value = '';
   $('extractAddFileInput').value = '';
   $('extractFileName').textContent = '';
@@ -1469,8 +1502,84 @@ function registerPhase2Case() {
     $('extractUploadPane').style.display = 'none';
     $('extractResultPane').style.display = 'none';
     $('extractProceedPane').style.display = '';
+    renderLearningReview(data.learningReview || [], data.caseId || '');
     loadCases();
   });
+}
+
+function learningDecisionSuccessMessage(decision) {
+  if (decision === 'register') {
+    return '学習候補に登録したにゃん ✓\nまだ自動では使わず、候補として大切に保管するね。';
+  }
+  if (decision === 'once') return 'この案件だけの修正として記録したにゃん ✓';
+  return '学習候補にはしないで記録したにゃん ✓';
+}
+
+function renderLearningReview(candidates, caseId) {
+  var panel = $('learningReviewPanel');
+  var list = $('learningReviewList');
+  var rows = Array.isArray(candidates) ? candidates : [];
+  if (!rows.length || !caseId) {
+    panel.style.display = 'none';
+    list.innerHTML = '';
+    return;
+  }
+  list.innerHTML = rows.map(function(candidate) {
+    var typeLabel = candidate.learningType === 'synonym' ? '類義語' : 'OCR補正';
+    var question = candidate.learningType === 'synonym'
+      ? 'この表現を、同じ意味の見出し候補として覚えておくにゃ？'
+      : 'この修正を、OCRの読み間違い候補として覚えておくにゃ？';
+    return '<div class="learning-review-card" data-candidate-id="' + escapeHtml(candidate.candidateId || '') + '">' +
+      '<div class="learning-review-type">' + typeLabel + '</div>' +
+      '<div class="learning-review-change">「' + escapeHtml(candidate.term || '') + '」→「' + escapeHtml(candidate.correctedTerm || '') + '」</div>' +
+      '<p class="learning-review-question">' + question + '</p>' +
+      '<div class="learning-review-actions">' +
+        '<button type="button" class="learning-review-action" data-decision="register">学習候補にする</button>' +
+        '<button type="button" class="learning-review-action" data-decision="once">この案件だけ</button>' +
+        '<button type="button" class="learning-review-action" data-decision="ignore">候補ではない</button>' +
+      '</div><div class="learning-review-status" aria-live="polite"></div></div>';
+  }).join('');
+  panel.style.display = '';
+  list.querySelectorAll('.learning-review-action').forEach(function(button) {
+    button.addEventListener('click', function() {
+      submitLearningDecision(button.closest('.learning-review-card'), caseId, button.getAttribute('data-decision'));
+    });
+  });
+}
+
+function submitLearningDecision(card, caseId, decision) {
+  if (!card || card.getAttribute('data-submitting') === 'true' || card.getAttribute('data-resolved') === 'true') return;
+  var candidateId = card.getAttribute('data-candidate-id') || '';
+  var buttons = card.querySelectorAll('.learning-review-action');
+  var status = card.querySelector('.learning-review-status');
+  card.setAttribute('data-submitting', 'true');
+  buttons.forEach(function(button) { button.disabled = true; });
+  status.className = 'learning-review-status';
+  status.textContent = '記録しているにゃん…';
+
+  google.script.run
+    .withSuccessHandler(function(response) {
+      if (response && response.success) {
+        var recordedDecision = response.data && response.data.decision || decision;
+        card.setAttribute('data-resolved', 'true');
+        card.removeAttribute('data-submitting');
+        status.className = 'learning-review-status is-success';
+        status.textContent = learningDecisionSuccessMessage(recordedDecision);
+        return;
+      }
+      handleLearningDecisionFailure(card, buttons, status);
+    })
+    .withFailureHandler(function() {
+      handleLearningDecisionFailure(card, buttons, status);
+    })
+    .api_recordLearningDecision(caseId, {candidateId:candidateId, decision:decision});
+}
+
+function handleLearningDecisionFailure(card, buttons, status) {
+  card.removeAttribute('data-submitting');
+  buttons.forEach(function(button) { button.disabled = false; });
+  status.className = 'learning-review-status is-error';
+  status.textContent = 'うまく記録できなかったにゃん。\n案件登録は完了しているので、もう一度だけ試してね。';
 }
 
 function cancelExtract() {
