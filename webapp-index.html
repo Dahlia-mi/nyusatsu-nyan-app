@@ -372,9 +372,32 @@
   .learning-review-status { margin-top: 9px; font-size: 13px; white-space: pre-line; }
   .learning-review-status.is-success { color: var(--ok); }
   .learning-review-status.is-error { color: var(--err); }
+  .semantic-review-panel { margin: 14px 0; text-align: left; }
+  .semantic-review-card {
+    border: 1px solid #D8C5D1; border-radius: 12px; background: #fff;
+    padding: 13px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(58,37,49,.07);
+  }
+  .semantic-review-term { margin: 5px 0 2px; font-size: 17px; font-weight: 800; overflow-wrap: anywhere; }
+  .semantic-review-meta, .semantic-review-evidence { color: var(--ink-soft); font-size: 12px; }
+  .semantic-review-evidence { margin: 7px 0; padding: 7px 9px; background: #F8F5F7; border-radius: 8px; white-space: pre-line; }
+  .semantic-review-options { display: grid; gap: 6px; margin: 9px 0; }
+  .semantic-review-option {
+    display: flex; align-items: center; gap: 8px; min-height: 40px;
+    border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; background: #fff;
+  }
+  .semantic-review-option input { width: 18px; height: 18px; margin: 0; accent-color: var(--mauve); }
+  .semantic-review-actions { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 7px; }
+  .semantic-review-action {
+    min-height: 44px; border: 1px solid var(--line); border-radius: 9px;
+    background: #fff; color: var(--ink); padding: 8px 6px; font-size: 12px; font-weight: 700;
+  }
+  .semantic-review-action[data-decision="teach"] { background: var(--mauve); color: #fff; border-color: var(--mauve); }
+  .semantic-review-action:disabled { opacity: .55; }
   @media (max-width: 460px) {
     .learning-review-actions { grid-template-columns: 1fr; }
     .learning-review-action { width: 100%; font-size: 14px; }
+    .semantic-review-actions { grid-template-columns: 1fr; }
+    .semantic-review-action { width: 100%; font-size: 14px; }
   }
   .tag-list { display:flex; flex-wrap:wrap; gap:6px; }
   .tag-chip {
@@ -528,6 +551,11 @@
         <h3 class="learning-review-heading">にゃんちゃんに教える？</h3>
         <p class="learning-review-help">今回の修正を、今後の読み取りに活かせるか確認してほしいにゃん</p>
         <div id="learningReviewList"></div>
+      </div>
+      <div class="semantic-review-panel" id="semanticReviewPanel" style="display:none;">
+        <h3 class="learning-review-heading">🐈 にゃんちゃんに教える？</h3>
+        <p class="learning-review-help">見つけた見出しの意味を、1タップで教えてほしいにゃん</p>
+        <div id="semanticReviewList"></div>
       </div>
       <a href="#" class="btn-secondary" id="btnBackFromProceed">案件一覧へ戻る</a>
     </div>
@@ -1096,6 +1124,8 @@ function resetExtractView() {
   state.phase2OriginalSnapshot = null;
   $('learningReviewPanel').style.display = 'none';
   $('learningReviewList').innerHTML = '';
+  $('semanticReviewPanel').style.display = 'none';
+  $('semanticReviewList').innerHTML = '';
   $('extractFileInput').value = '';
   $('extractAddFileInput').value = '';
   $('extractFileName').textContent = '';
@@ -1503,6 +1533,7 @@ function registerPhase2Case() {
     $('extractResultPane').style.display = 'none';
     $('extractProceedPane').style.display = '';
     renderLearningReview(data.learningReview || [], data.caseId || '');
+    renderSemanticReview(data.semanticReview || [], data.caseId || '');
     loadCases();
   });
 }
@@ -1576,6 +1607,112 @@ function submitLearningDecision(card, caseId, decision) {
 }
 
 function handleLearningDecisionFailure(card, buttons, status) {
+  card.removeAttribute('data-submitting');
+  buttons.forEach(function(button) { button.disabled = false; });
+  status.className = 'learning-review-status is-error';
+  status.textContent = 'うまく記録できなかったにゃん。\n案件登録は完了しているので、もう一度だけ試してね。';
+}
+
+function semanticDecisionSuccessMessage(decision) {
+  if (decision === 'teach') return '意味を学習候補として預かったにゃん ✓\nまだ自動では使わず、大切に保管するね。';
+  if (decision === 'defer') return '今回は教えないで進むにゃん ✓';
+  if (decision === 'not_heading') return '見出しではないと記録したにゃん ✓';
+  return 'にゃん語辞典に該当する意味がないと記録したにゃん ✓';
+}
+
+function renderSemanticReview(candidates, caseId) {
+  var panel = $('semanticReviewPanel');
+  var list = $('semanticReviewList');
+  var rows = Array.isArray(candidates) ? candidates : [];
+  if (!rows.length || !caseId) {
+    panel.style.display = 'none';
+    list.innerHTML = '';
+    return;
+  }
+  list.innerHTML = rows.map(function(candidate, index) {
+    var candidateId = String(candidate.candidateId || '');
+    var radioName = 'semanticMeaning' + index;
+    var preselected = String(candidate.preselectedSemanticKey || '');
+    var options = Array.isArray(candidate.semanticKeyOptions) ? candidate.semanticKeyOptions.slice(0, 4) : [];
+    var optionHtml = options.map(function(option) {
+      var semanticKey = String(option.semanticKey || '');
+      var checked = semanticKey && semanticKey === preselected ? ' checked' : '';
+      return '<label class="semantic-review-option"><input type="radio" name="' + radioName + '" value="' +
+        escapeHtml(semanticKey) + '"' + checked + '><span>' + escapeHtml(option.displayName || '') + '</span></label>';
+    }).join('');
+    optionHtml += '<label class="semantic-review-option"><input type="radio" name="' + radioName +
+      '" value="__unmapped__"><span>該当する意味がない</span></label>';
+    return '<div class="semantic-review-card" data-candidate-id="' + escapeHtml(candidateId) + '">' +
+      '<div class="learning-review-type">にゃん語辞典・見出し候補</div>' +
+      '<div class="semantic-review-term">「' + escapeHtml(candidate.term || '') + '」</div>' +
+      '<div class="semantic-review-meta">資料：' + escapeHtml(candidate.documentType || 'その他') + '</div>' +
+      (candidate.sourceText ? '<div class="semantic-review-evidence">根拠：' + escapeHtml(candidate.sourceText) + '</div>' : '') +
+      '<p class="learning-review-question">これは何を意味しますか？</p>' +
+      '<div class="semantic-review-options">' + optionHtml + '</div>' +
+      '<div class="semantic-review-actions">' +
+        '<button type="button" class="semantic-review-action" data-decision="teach">教える</button>' +
+        '<button type="button" class="semantic-review-action" data-decision="defer">今回は教えない</button>' +
+        '<button type="button" class="semantic-review-action" data-decision="not_heading">見出しではない</button>' +
+      '</div><div class="learning-review-status" aria-live="polite"></div></div>';
+  }).join('');
+  panel.style.display = '';
+  list.querySelectorAll('.semantic-review-action').forEach(function(button) {
+    button.addEventListener('click', function() {
+      submitSemanticDecision(button.closest('.semantic-review-card'), caseId, button.getAttribute('data-decision'));
+    });
+  });
+}
+
+function submitSemanticDecision(card, caseId, decision) {
+  if (!card || card.getAttribute('data-submitting') === 'true' || card.getAttribute('data-resolved') === 'true') return;
+  var selected = card.querySelector('.semantic-review-option input:checked');
+  var selectedSemanticKey = selected ? String(selected.value || '') : '';
+  var effectiveDecision = decision;
+  var status = card.querySelector('.learning-review-status');
+  if (decision === 'teach') {
+    if (!selectedSemanticKey) {
+      status.className = 'learning-review-status is-error';
+      status.textContent = '意味を1つ選んでほしいにゃん。';
+      return;
+    }
+    if (selectedSemanticKey === '__unmapped__') {
+      effectiveDecision = 'unmapped';
+      selectedSemanticKey = '';
+    }
+  } else {
+    selectedSemanticKey = '';
+  }
+
+  var candidateId = card.getAttribute('data-candidate-id') || '';
+  var buttons = card.querySelectorAll('.semantic-review-action');
+  card.setAttribute('data-submitting', 'true');
+  buttons.forEach(function(button) { button.disabled = true; });
+  status.className = 'learning-review-status';
+  status.textContent = '意味を記録しているにゃん…';
+
+  google.script.run
+    .withSuccessHandler(function(response) {
+      if (response && response.success) {
+        var recordedDecision = response.data && response.data.decision || effectiveDecision;
+        card.setAttribute('data-resolved', 'true');
+        card.removeAttribute('data-submitting');
+        status.className = 'learning-review-status is-success';
+        status.textContent = semanticDecisionSuccessMessage(recordedDecision);
+        return;
+      }
+      handleSemanticDecisionFailure(card, buttons, status);
+    })
+    .withFailureHandler(function() {
+      handleSemanticDecisionFailure(card, buttons, status);
+    })
+    .api_recordSemanticCandidateDecision(caseId, {
+      candidateId: candidateId,
+      selectedSemanticKey: selectedSemanticKey,
+      decision: effectiveDecision
+    });
+}
+
+function handleSemanticDecisionFailure(card, buttons, status) {
   card.removeAttribute('data-submitting');
   buttons.forEach(function(button) { button.disabled = false; });
   status.className = 'learning-review-status is-error';
