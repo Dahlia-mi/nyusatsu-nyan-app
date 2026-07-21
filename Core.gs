@@ -372,7 +372,10 @@ function registerCaseJsonToProject_(caseJson, sourceOverride, assetMeta) {
     return { caseJson: data, payload: payload, registration: result };
   } catch (e) {
     if (result.isNew) rollbackNewProject_(result.projectId, payload.source, payload.sourceId, result.folderId);
-    throw new Error('案件資産の保存に失敗したため、新規登録を取り消しました: ' + e.message);
+    const failureMessage = result.isNew
+      ? '案件資産の保存に失敗したため、新規登録を取り消しました'
+      : '案件資産の保存に失敗したため、既存案件への統合を完了できませんでした';
+    throw new Error(failureMessage + ': ' + e.message);
   }
 }
 
@@ -873,12 +876,9 @@ function intakeProject(payload) {
   });
   if (sourceLinkAdded && !isNew) bumpSourceCount_(projSheet, projectId);
 
-  let folderId = '';
-  let folderUrl = '';
-  if (isNew && createdFolder) {
-    folderId = createdFolder.getId();
-    folderUrl = createdFolder.getUrl();
-  }
+  const projectFolder = createdFolder || createProjectFolder_(projectId);
+  const folderId = projectFolder.getId();
+  const folderUrl = projectFolder.getUrl();
 
   return { projectId, isNew, matchType, needsCheck, sourceLinkAdded, folderId, folderUrl };
 }
