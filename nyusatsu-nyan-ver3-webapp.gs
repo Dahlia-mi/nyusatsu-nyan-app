@@ -396,6 +396,8 @@ const SUPPLIER_ESTIMATE_HEADERS = [
   '採用フラグ', '採用原価(税抜)', '原価確定状態', '適用税率',
   '冪等キー', '登録日時', '更新日時'
 ];
+// 将来の「仕入先にゃん」分離用。既存シートでは欠落していても読取可能とする。
+const SUPPLIER_ESTIMATE_OPTIONAL_HEADERS = ['品目ID', '仕入先ID'];
 
 function getSupplierEstimateTaxRate_() {
   const configured = PropertiesService.getScriptProperties()
@@ -419,7 +421,7 @@ function ensureSupplierEstimateSheetForWrite_(ss) {
     ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0]
       .map((value) => String(value || '').trim())
     : [];
-  SUPPLIER_ESTIMATE_HEADERS.forEach((header) => {
+  SUPPLIER_ESTIMATE_HEADERS.concat(SUPPLIER_ESTIMATE_OPTIONAL_HEADERS).forEach((header) => {
     const matches = existing.filter((value) => value === header).length;
     if (matches > 1) throw new Error(`${SUPPLIER_ESTIMATE_SHEET}の「${header}」列が重複しているにゃん。`);
     if (!matches) {
@@ -428,7 +430,7 @@ function ensureSupplierEstimateSheetForWrite_(ss) {
     }
   });
   const headerMap = supplierEstimateHeaderMap_(sheet);
-  SUPPLIER_ESTIMATE_HEADERS.forEach((header) => {
+  SUPPLIER_ESTIMATE_HEADERS.concat(SUPPLIER_ESTIMATE_OPTIONAL_HEADERS).forEach((header) => {
     sheet.getRange(1, headerMap[header]).setFontWeight('bold').setBackground('#f0f0f0');
   });
   sheet.setFrozenRows(1);
@@ -443,7 +445,11 @@ function setupSupplierEstimateSheet() {
     acquired = lock.tryLock(10000);
     if (!acquired) throw new Error('ほかの更新処理中にゃん。少し待ってから、もう一度初期設定してほしいにゃん。');
     const sheet = ensureSupplierEstimateSheetForWrite_(SpreadsheetApp.getActiveSpreadsheet());
-    return { success: true, sheetName: sheet.getName(), headers: SUPPLIER_ESTIMATE_HEADERS.slice() };
+    return {
+      success: true,
+      sheetName: sheet.getName(),
+      headers: SUPPLIER_ESTIMATE_HEADERS.concat(SUPPLIER_ESTIMATE_OPTIONAL_HEADERS),
+    };
   } finally {
     if (acquired) lock.releaseLock();
   }
@@ -495,6 +501,8 @@ function normalizeSupplierEstimate_(payload) {
   if (['送料込み', '送料別', '不明'].indexOf(shippingCategory) === -1) throw new Error('送料区分を選んでほしいにゃん。');
   return {
     estimateId: String(input.estimateId || '').trim(),
+    itemId: String(input.itemId || '').trim(),
+    supplierId: String(input.supplierId || '').trim(),
     supplierName: supplierName,
     quoteAmount: parseSupplierEstimateAmount_(input.quoteAmount, true, '見積金額'),
     taxCategory: taxCategory,
@@ -533,6 +541,7 @@ function calculateSupplierEstimateCost_(estimate, taxRate) {
 
 function supplierEstimateRowObject_(row, map, rowNumber) {
   const read = (header) => row[map[header] - 1];
+  const readOptional = (header) => map[header] ? row[map[header] - 1] : '';
   const shippingRaw = read('送料金額');
   const costRaw = read('採用原価(税抜)');
   const pdfUrlRaw = String(read('PDF URL') || '').trim();
@@ -540,6 +549,8 @@ function supplierEstimateRowObject_(row, map, rowNumber) {
     rowNumber: rowNumber,
     estimateId: String(read('見積ID') || '').trim(),
     caseId: String(read('案件ID') || '').trim(),
+    itemId: String(readOptional('品目ID') || '').trim(),
+    supplierId: String(readOptional('仕入先ID') || '').trim(),
     supplierName: String(read('仕入先名') || '').trim(),
     quoteAmount: Number(read('見積金額')),
     taxCategory: String(read('税区分') || '').trim(),
@@ -628,7 +639,40 @@ function buildSupplierEstimateResponse_(ss, caseId) {
   return {
     estimates: estimates,
     summary: buildSupplierEstimateSummary_(caseId, expected, estimates),
+    adoptionResult: buildSupplierEstimateAdoptionResult_(caseId, '', estimates),
   };
+}
+
+/**
+ * 入札にゃんOSへ返す採用結果DTO。
+ * 01_案件管理やWeb画面には依存せず、将来は品目ID指定でも取得できる。
+ */
+function buildSupplierEstimateAdoptionResult_(caseId, itemId, estimates) {
+  const targetCaseId = String(caseId || '').trim();
+  const targetItemId = String(itemId || '').trim();
+  const candidates = (estimates || []).filter((estimate) =>
+    estimate.caseId === targetCaseId &&
+    (!targetItemId || estimate.itemId === targetItemId) &&
+    estimate.adopted
+  );
+  const adopted = candidates.length === 1 ? candidates[0] : null;
+  return {
+    caseId: targetCaseId,
+    itemId: targetItemId || (adopted ? adopted.itemId : ''),
+    adoptedEstimateId: adopted ? adopted.estimateId : '',
+    adoptedSupplierId: adopted ? adopted.supplierId : '',
+    adoptedSupplierName: adopted ? adopted.supplierName : '',
+    adoptedCostTaxExclusive: adopted ? adopted.adoptedCostTaxExclusive : null,
+    costStatus: adopted ? adopted.costStatus : '',
+    deliveryDate: adopted ? adopted.deliveryDate : '',
+    status: adopted ? 'adopted' : (candidates.length > 1 ? 'needs_review' : 'missing'),
+  };
+}
+
+function getAdoptedSupplierEstimateResult_(ss, caseId, itemId) {
+  const sheet = ss.getSheetByName(SUPPLIER_ESTIMATE_SHEET);
+  const estimates = sheet ? getSupplierEstimateRows_(sheet, caseId) : [];
+  return buildSupplierEstimateAdoptionResult_(caseId, itemId, estimates);
 }
 
 function api_listSupplierEstimates(caseId) {
@@ -654,7 +698,11 @@ function api_saveSupplierEstimate(caseId, payload) {
     if (!acquired) return apiError_('ほかの更新処理中にゃん。少し待ってから、もう一度保存してほしいにゃん。');
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     findCaseRowById_(ss, caseId);
-    return apiOk_(saveSupplierEstimate_(ss, caseId, normalized));
+    const saved = saveSupplierEstimate_(ss, caseId, normalized);
+    const response = buildSupplierEstimateResponse_(ss, caseId);
+    response.savedEstimateId = saved.estimateId;
+    response.duplicate = saved.duplicate;
+    return apiOk_(response);
   } catch (e) {
     return apiError_(e.message);
   } finally {
@@ -673,7 +721,7 @@ function saveSupplierEstimate_(ss, caseId, normalized) {
   const duplicate = !normalized.estimateId && normalized.idempotencyKey
     ? findSupplierEstimateByIdempotencyKey_(sheet, targetCaseId, normalized.idempotencyKey)
     : null;
-  if (duplicate) return buildSupplierEstimateResponse_(ss, targetCaseId);
+  if (duplicate) return { estimateId: duplicate.estimateId, duplicate: true };
 
   const existing = normalized.estimateId ? findSupplierEstimate_(sheet, normalized.estimateId) : null;
   if (normalized.estimateId && (!existing || existing.caseId !== targetCaseId)) {
@@ -684,13 +732,15 @@ function saveSupplierEstimate_(ss, caseId, normalized) {
   const record = buildSupplierEstimateSaveRecord_(sheet, map, targetCaseId, normalized, existing, now);
   writeSupplierEstimateFields_(sheet, map, rowNumber, record);
   SpreadsheetApp.flush();
-  return buildSupplierEstimateResponse_(ss, targetCaseId);
+  return { estimateId: record['見積ID'], duplicate: false };
 }
 
 function buildSupplierEstimateSaveRecord_(sheet, map, caseId, normalized, existing, now) {
   const record = {
     '見積ID': existing ? existing.estimateId : Utilities.getUuid(),
     '案件ID': caseId,
+    '品目ID': normalized.itemId || (existing ? existing.itemId : ''),
+    '仕入先ID': normalized.supplierId || (existing ? existing.supplierId : ''),
     '仕入先名': normalized.supplierName,
     '見積金額': normalized.quoteAmount,
     '税区分': normalized.taxCategory,
@@ -882,10 +932,21 @@ function testSupplierEstimatePureFunctions() {
   assert(cellValues[1] === '既存管理値', '未知列を維持');
   assert(cellValues[2] === '更新後', '管理対象列だけ更新');
   const requestNormalized = normalizeSupplierEstimate_({
+    itemId: 'ITEM-1', supplierId: 'SUP-1',
     supplierName: 'A社', quoteAmount: 1, taxCategory: '税抜',
     shippingCategory: '送料込み', requestId: 'OCR-REQUEST-1',
   });
   assert(requestNormalized.idempotencyKey === 'OCR-REQUEST-1', 'requestIdを冪等キーとして正規化');
+  assert(requestNormalized.itemId === 'ITEM-1', '品目IDを正規化');
+  assert(requestNormalized.supplierId === 'SUP-1', '仕入先IDを正規化');
+  const adoptionResult = buildSupplierEstimateAdoptionResult_('CASE-1', 'ITEM-1', [{
+    caseId: 'CASE-1', itemId: 'ITEM-1', estimateId: 'EST-1',
+    supplierId: 'SUP-1', supplierName: 'A社', adopted: true,
+    adoptedCostTaxExclusive: 100000, costStatus: '確定', deliveryDate: '2026/08/01',
+  }]);
+  assert(adoptionResult.adoptedEstimateId === 'EST-1', '採用見積ID DTO');
+  assert(adoptionResult.adoptedSupplierId === 'SUP-1', '採用仕入先ID DTO');
+  assert(adoptionResult.adoptedCostTaxExclusive === 100000, '採用原価 DTO');
   return { success: true, tested: tested };
 }
 
