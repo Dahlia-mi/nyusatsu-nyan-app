@@ -1057,11 +1057,13 @@ function generateEstimate() {
 
   callApi('api_generateEstimate', [c.caseId], '見積書を生成中にゃん…（20秒ほどかかるにゃん）', function (data) {
     $('doneMeta').textContent = '案件ID ' + data.caseId + '／' + data.org;
-    $('donePdfLink').setAttribute('href', data.pdfUrl);
-    // 一覧・詳細キャッシュにも反映
-    c.pdfUrl = data.pdfUrl;
-    var inList = state.cases.find(function (x) { return x.caseId === c.caseId; });
-    if (inList) inList.pdfUrl = data.pdfUrl;
+    $('donePdfLink').setAttribute('href', data.primaryPdfUrl || data.pdfUrl);
+    // サーバーで書き戻し検証後に再取得した案件データを正として反映する。
+    var refreshed = data.caseData || c;
+    state.currentCase = refreshed;
+    var index = state.cases.findIndex(function (x) { return x.caseId === refreshed.caseId; });
+    if (index >= 0) state.cases[index] = refreshed;
+    renderCaseList();
     showView('done');
   });
 }

@@ -40,6 +40,10 @@ const MASTER_HEADERS = {
   DOC_ID: 'テンプレDoc ID',
   JSON: 'JSON',
   ACTIVE: '有効',
+  PRIORITY: '優先順位',
+  TAX_DISPLAY: '税表示デフォルト',
+  TAX_RATE: '税率デフォルト',
+  ROUNDING_MODE: '端数処理デフォルト',
   ADDR1: '宛名_役職1',
   ADDR2: '宛名_役職2',
   ADDR_NAME: '宛名_氏名',
@@ -54,7 +58,31 @@ const CASE_HEADERS = {
   DELIVERY_PLACE: '納品場所',
   FOLDER_URL: '案件フォルダURL',
   PDF_LINK: '見積書PDF', // 無ければ自動で右端に新設する
+  TAX_DISPLAY: '見積税表示',
+  TAX_RATE: '見積税率',
+  ROUNDING_MODE: '見積端数処理',
+  GENERATED_AT: '見積書生成日時',
+  TEMPLATE_ID: '見積書テンプレートID',
+  GENERATION_STATUS: '見積書生成状態',
+  GENERATION_SOURCE: '見積書生成経路',
+  BUSINESS_PROFILE_ID: '事業者設定ID',
 };
+
+const ESTIMATE_V2_BUSINESS_SHEET = '事業者設定';
+const ESTIMATE_V2_LOG_SHEET = '提出書類ログ';
+const ESTIMATE_V2_DEFAULT_PROFILE_ID = 'DEFAULT';
+const ESTIMATE_V2_BUSINESS_HEADERS = [
+  '設定ID', '有効', 'デフォルト', '商号', '郵便番号', '住所',
+  '代表者役職', '代表者氏名', '本件責任者', '担当者', '電話',
+  '担当者電話', 'FAX', 'メール', '適格請求書発行事業者登録番号', '更新日時'
+];
+const ESTIMATE_V2_LOG_HEADERS = [
+  'ログID', '案件ID', '書類種別', '生成日時', 'テンプレートID', '様式名',
+  '税抜額', '税額', '税込額', '提出金額', '税表示', '税率', '端数処理',
+  'PDF URL', '生成経路', '成否', 'エラー段階', 'エラー内容'
+];
+const ESTIMATE_V2_TAX_DISPLAYS = ['exclusive', 'inclusive', 'none'];
+const ESTIMATE_V2_ROUNDING_MODES = ['round', 'floor', 'ceil'];
 
 // 03_見積書 作業台エリアのラベル名
 const WORK_LABELS = {
@@ -83,6 +111,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('🐈 入札にゃん')
     .addItem('案件情報を再読込', 'reloadCaseToWorkbench')
+    .addItem('案件へ反映', 'applyWorkbenchToCase')
     .addSeparator()
     .addItem('見積書を生成', 'generateEstimateFromSelection')
     .addToUi();
@@ -283,12 +312,12 @@ function generateEstimateFromSelection() {
   }
 
   try {
-    const results = generateEstimatesForRow_(ss, activeSheet, row);
-    const lines = results.map((r) => `【${r.style}】\n${r.pdfUrl}`).join('\n\n');
+    const result = generateEstimatesForRow_(ss, activeSheet, row);
+    const lines = result.documents.map((r) => `【${r.style}】\n${r.pdfUrl}`).join('\n\n');
     ui.alert(
       '見積書を生成したにゃん🐈\n\n' +
-      `案件ID：${results[0].caseId}\n` +
-      `発注機関：${results[0].org}\n\n` +
+      `案件ID：${result.caseId}\n` +
+      `発注機関：${result.org}\n\n` +
       lines
     );
   } catch (e) {
@@ -298,59 +327,78 @@ function generateEstimateFromSelection() {
 
 /**
  * 既存PC運用の互換入口。
- * 01_案件管理の選択行＋03_見積書の作業台からpayloadを作り、JSON生成コアへ渡す。
+ * 01_案件管理の選択行からVer2 payloadを作り、JSON生成コアへ渡す。
  */
 function generateEstimatesForRow_(ss, caseSheet, row) {
-  const payload = buildEstimatePayloadFromWorkbench_(ss, caseSheet, row);
+  const payload = buildEstimatePayloadV2FromRow_(ss, caseSheet, row, 'spreadsheet-menu');
   return generateEstimateFromPayload_(payload, { ss: ss, caseSheet: caseSheet, row: row });
 }
 
-/** 03_見積書と01_案件管理から、共通の見積payloadを作る */
+/**
+ * 互換用。作業台を正本として生成しない。
+ * 既存呼出元にも01_案件管理ベースのVer2 payloadを返す。
+ */
 function buildEstimatePayloadFromWorkbench_(ss, caseSheet, row) {
+  return buildEstimatePayloadV2FromRow_(ss, caseSheet, row, 'legacy-wrapper');
+}
+
+/** 01_案件管理・事業者設定・テンプレート設定からVer2 payloadを構築する。 */
+function buildEstimatePayloadV2FromRow_(ss, caseSheet, row, generationSource) {
   const caseHeaderMap = getHeaderMap_(caseSheet);
-  [CASE_HEADERS.CASE_ID, CASE_HEADERS.CASE_NAME, CASE_HEADERS.ORG].forEach((h) => {
+  [CASE_HEADERS.CASE_ID, CASE_HEADERS.CASE_NAME, CASE_HEADERS.ORG, CASE_HEADERS.AMOUNT].forEach((h) => {
     if (!caseHeaderMap[h]) throw new Error(`01_案件管理に「${h}」列が見つからないにゃん。`);
   });
 
   const read = (header, fallback) => caseHeaderMap[header]
     ? caseSheet.getRange(row, caseHeaderMap[header]).getValue()
     : (fallback || '');
-  const workSheet = ss.getSheetByName(ESTIMATE_WORK_SHEET_NAME);
-  if (!workSheet) throw new Error(`「${ESTIMATE_WORK_SHEET_NAME}」シートが見つからないにゃん。`);
 
-  const items = readItemsFromWorkbench_(workSheet);
-  if (items.length === 0) {
-    throw new Error('品目テーブルにデータが無いにゃん。03_見積書で品名・数量・金額を確認してほしいにゃん。');
+  const caseId = String(read(CASE_HEADERS.CASE_ID, '')).trim();
+  const caseName = String(read(CASE_HEADERS.CASE_NAME, '')).trim();
+  const amountExclusive = parseEstimateNumberV2_(read(CASE_HEADERS.AMOUNT, ''));
+  if (!(amountExclusive > 0)) {
+    throw new Error('01_案件管理の「想定入札額(税抜)」へ有効な金額を入力してほしいにゃん。');
   }
 
-  const caseAmount = Number(read(CASE_HEADERS.AMOUNT, '')) || 0;
-  const workbenchAmount = items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-  const amount = workbenchAmount > 0 ? workbenchAmount : caseAmount;
-  if (amount <= 0) {
-    throw new Error('見積金額が未入力にゃん。03_見積書の「金額(税抜)」へ金額を入れてほしいにゃん。');
-  }
-
-  const company = {
-    name: getValueByLabel_(workSheet, COMPANY_LABELS.NAME),
-    address: getValueByLabel_(workSheet, COMPANY_LABELS.ADDRESS),
-    representative: getOptionalValueByLabel_(workSheet, COMPANY_LABELS.REP) || getValueByLabel_(workSheet, COMPANY_LABELS.CONTACT),
-    responsibleName: getOptionalValueByLabel_(workSheet, COMPANY_LABELS.RESPONSIBLE),
-    responsiblePhone: getOptionalValueByLabel_(workSheet, COMPANY_LABELS.RESPONSIBLE_PHONE),
-    contactName: getValueByLabel_(workSheet, COMPANY_LABELS.CONTACT),
-    contactPhone: getOptionalValueByLabel_(workSheet, COMPANY_LABELS.CONTACT_PHONE),
-  };
-  if (!company.responsibleName) company.responsibleName = company.representative;
+  const company = getEstimateBusinessProfileV2_(
+    ss,
+    String(read(CASE_HEADERS.BUSINESS_PROFILE_ID, '') || '').trim()
+  );
+  const taxDisplay = String(read(CASE_HEADERS.TAX_DISPLAY, '') || '').trim();
+  const taxRate = read(CASE_HEADERS.TAX_RATE, '');
+  const roundingMode = String(read(CASE_HEADERS.ROUNDING_MODE, '') || '').trim();
+  const provisionalAmounts = calculateEstimateAmountsV2_(
+    amountExclusive,
+    taxDisplay || 'exclusive',
+    taxRate === '' || taxRate == null ? 0.10 : taxRate,
+    roundingMode || 'round'
+  );
 
   return {
-    caseId: String(read(CASE_HEADERS.CASE_ID, '')).trim(),
-    caseName: String(read(CASE_HEADERS.CASE_NAME, '')).trim(),
+    schemaVersion: '2.0',
+    caseId: caseId,
+    caseName: caseName,
     org: String(read(CASE_HEADERS.ORG, '')).trim(),
     estimateDate: new Date(),
     deadline: read(CASE_HEADERS.DEADLINE, ''),
     deliveryPlace: read(CASE_HEADERS.DELIVERY_PLACE, '仕様書のとおり') || '仕様書のとおり',
-    amountTaxExclusive: amount,
-    items: items,
+    amountExclusive: provisionalAmounts.amountExclusive,
+    taxAmount: provisionalAmounts.taxAmount,
+    amountInclusive: provisionalAmounts.amountInclusive,
+    submittedAmount: provisionalAmounts.submittedAmount,
+    taxDisplay: taxDisplay,
+    taxRate: taxRate,
+    roundingMode: roundingMode,
+    items: [{
+      name: caseName,
+      spec: '仕様書のとおり',
+      qty: 1,
+      unit: '式',
+      unitPrice: amountExclusive,
+      amount: amountExclusive,
+    }],
     company: company,
+    generationSource: generationSource || 'unknown',
   };
 }
 
@@ -362,7 +410,106 @@ function generateEstimateFromPayload(payload) {
   return generateEstimateFromPayload_(payload, {});
 }
 
-/** JSON見積生成コア。03_見積書のセル配置には依存しない。 */
+function parseEstimateNumberV2_(value) {
+  if (typeof value === 'number') return isFinite(value) ? value : NaN;
+  const normalized = String(value == null ? '' : value).replace(/[￥¥,\s]/g, '');
+  if (!normalized || !/^-?\d+(?:\.\d+)?$/.test(normalized)) return NaN;
+  return Number(normalized);
+}
+
+function normalizeTaxRateV2_(value, fallback) {
+  let rate = parseEstimateNumberV2_(value);
+  if (!isFinite(rate)) rate = fallback;
+  if (rate > 1 && rate <= 100) rate = rate / 100;
+  if (!isFinite(rate) || rate < 0 || rate > 1) throw new Error('税率が不正にゃん。0～1または0～100で指定してほしいにゃん。');
+  return rate;
+}
+
+function roundEstimateTaxV2_(value, mode) {
+  if (mode === 'floor') return Math.floor(value);
+  if (mode === 'ceil') return Math.ceil(value);
+  return Math.round(value);
+}
+
+function calculateEstimateAmountsV2_(amountExclusive, taxDisplay, taxRate, roundingMode) {
+  const exclusive = parseEstimateNumberV2_(amountExclusive);
+  if (!(exclusive > 0)) throw new Error('税抜額が有効な正数ではないにゃん。');
+  const display = ESTIMATE_V2_TAX_DISPLAYS.indexOf(taxDisplay) >= 0 ? taxDisplay : 'exclusive';
+  const mode = ESTIMATE_V2_ROUNDING_MODES.indexOf(roundingMode) >= 0 ? roundingMode : 'round';
+  const rate = normalizeTaxRateV2_(taxRate, 0.10);
+  const taxAmount = display === 'none' ? 0 : roundEstimateTaxV2_(exclusive * rate, mode);
+  const inclusive = exclusive + taxAmount;
+  return {
+    amountExclusive: exclusive,
+    taxAmount: taxAmount,
+    amountInclusive: inclusive,
+    submittedAmount: display === 'inclusive' ? inclusive : exclusive,
+    taxDisplay: display,
+    taxRate: rate,
+    roundingMode: mode,
+  };
+}
+
+function getEstimateBusinessProfileV2_(ss, requestedId) {
+  const sheet = ss.getSheetByName(ESTIMATE_V2_BUSINESS_SHEET);
+  if (!sheet) {
+    throw new Error(`「${ESTIMATE_V2_BUSINESS_SHEET}」が未設定にゃん。先に setupEstimateV2() を実行してほしいにゃん。`);
+  }
+  const map = getHeaderMap_(sheet);
+  ESTIMATE_V2_BUSINESS_HEADERS.forEach((header) => {
+    if (!map[header]) throw new Error(`事業者設定に「${header}」列が見つからないにゃん。`);
+  });
+  if (sheet.getLastRow() < 2) throw new Error('事業者設定に有効な事業者が登録されていないにゃん。');
+
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  const target = String(requestedId || '').trim();
+  let selected = null;
+  values.forEach((row) => {
+    const enabled = !isFalsy_(row[map['有効'] - 1]);
+    const id = String(row[map['設定ID'] - 1] || '').trim();
+    if (!enabled || !id) return;
+    if (target && id === target) selected = row;
+    if (!target && !selected && !isFalsy_(row[map['デフォルト'] - 1])) selected = row;
+  });
+  if (!selected) {
+    throw new Error(target
+      ? `事業者設定ID「${target}」が見つからないか無効にゃん。`
+      : 'デフォルトの事業者設定が見つからないにゃん。');
+  }
+  const read = (header) => selected[map[header] - 1] || '';
+  const representativeRole = String(read('代表者役職')).trim();
+  const representativeName = String(read('代表者氏名')).trim();
+  return {
+    profileId: String(read('設定ID')).trim(),
+    name: String(read('商号')).trim(),
+    postalCode: String(read('郵便番号')).trim(),
+    address: String(read('住所')).trim(),
+    representativeRole: representativeRole,
+    representativeName: representativeName,
+    representative: [representativeRole, representativeName].filter(Boolean).join(' '),
+    responsibleName: String(read('本件責任者')).trim() || representativeName,
+    contactName: String(read('担当者')).trim(),
+    phone: String(read('電話')).trim(),
+    responsiblePhone: String(read('電話')).trim(),
+    contactPhone: String(read('担当者電話')).trim(),
+    fax: String(read('FAX')).trim(),
+    email: String(read('メール')).trim(),
+    invoiceRegistrationNumber: String(read('適格請求書発行事業者登録番号')).trim(),
+  };
+}
+
+function resolveEstimateTaxSettingsV2_(payload, master) {
+  const manifest = master.manifest || {};
+  return {
+    taxDisplay: payload.taxDisplay || master.taxDisplay || manifest.taxDisplay || 'exclusive',
+    taxRate: payload.taxRate !== '' && payload.taxRate != null
+      ? payload.taxRate
+      : (master.taxRate !== '' && master.taxRate != null ? master.taxRate : (manifest.taxRate != null ? manifest.taxRate : 0.10)),
+    roundingMode: payload.roundingMode || master.roundingMode || manifest.roundingMode || 'round',
+  };
+}
+
+/** JSON見積生成コア。生成開始後はpayloadとテンプレート設定だけを使用する。 */
 function generateEstimateFromPayload_(payload, context) {
   context = context || {};
   const data = normalizeEstimatePayload_(payload);
@@ -380,10 +527,6 @@ function generateEstimateFromPayload_(payload, context) {
     throw new Error(`発注機関「${data.org}」に対応するテンプレが見つからないにゃん。`);
   }
 
-  const amount = data.items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) || data.amountTaxExclusive;
-  if (amount <= 0) throw new Error('見積金額が未入力にゃん。');
-  const amountStr = formatYen_(amount);
-  const amountGrossStr = formatYen_(Math.round(amount * 1.1));
   const estimateDate = data.estimateDate || new Date();
   const itemDescLabel = data.items.length > 1
     ? `${data.items[0].name}外${data.items.length - 1}件`
@@ -393,48 +536,118 @@ function generateEstimateFromPayload_(payload, context) {
   const results = [];
   const skipped = [];
 
-  templateEntries.forEach((entry) => {
-    const master = getManifestById_(entry.manifestId);
-    if (!master) throw new Error(`manifestID「${entry.manifestId}」がテンプレ管理マスターに見つからないにゃん。`);
-    if (isFalsy_(master.active)) { skipped.push(entry.style); return; }
+  try {
+    templateEntries.forEach((entry) => {
+      const master = getManifestById_(entry.manifestId);
+      if (!master) throw new Error(`manifestID「${entry.manifestId}」がテンプレ管理マスターに見つからないにゃん。`);
+      if (isFalsy_(master.active)) { skipped.push(entry.style); return; }
+      const taxSettings = resolveEstimateTaxSettingsV2_(data, master);
+      const amounts = calculateEstimateAmountsV2_(
+        data.amountExclusive,
+        taxSettings.taxDisplay,
+        taxSettings.taxRate,
+        taxSettings.roundingMode
+      );
 
-    const canonicalData = {
-      submitDate_wareki: toReiwaDateString_(estimateDate),
-      submitDate_seireki: toSeirekiDateString_(estimateDate),
-      addressee_line1: master.addressee1 || '',
-      addressee_line2: master.addressee2 || '',
-      addressee_name: master.addresseeName || '',
-      companyAddress: data.company.address,
-      companyName: data.company.name,
-      repName: data.company.representative,
-      responsibleName: data.company.responsibleName,
-      responsiblePhone: data.company.responsiblePhone,
-      contactName: data.company.contactName,
-      contactPhone: data.company.contactPhone,
-      amount: amountStr,
-      amountGross: amountGrossStr,
-      caseName: data.caseName,
-      deadline: data.deadline instanceof Date ? toReiwaDateString_(data.deadline) : String(data.deadline || ''),
-      deliveryPlace: data.deliveryPlace,
-      itemDesc: itemDescLabel,
+      const canonicalData = {
+        submitDate_wareki: toReiwaDateString_(estimateDate),
+        submitDate_seireki: toSeirekiDateString_(estimateDate),
+        addressee_line1: master.addressee1 || '',
+        addressee_line2: master.addressee2 || '',
+        addressee_name: master.addresseeName || '',
+        companyAddress: data.company.address,
+        companyName: data.company.name,
+        repName: data.company.representative,
+        responsibleName: data.company.responsibleName,
+        responsiblePhone: data.company.responsiblePhone,
+        contactName: data.company.contactName,
+        contactPhone: data.company.contactPhone,
+        amount: formatYen_(amounts.submittedAmount),
+        amountExclusive: formatYen_(amounts.amountExclusive),
+        taxAmount: formatYen_(amounts.taxAmount),
+        amountInclusive: formatYen_(amounts.amountInclusive),
+        // 旧テンプレのAMOUNT_GROSSもVer2では「提出金額」として扱う。
+        amountGross: formatYen_(amounts.submittedAmount),
+        submittedAmount: formatYen_(amounts.submittedAmount),
+        caseName: data.caseName,
+        deadline: data.deadline instanceof Date ? toReiwaDateString_(data.deadline) : String(data.deadline || ''),
+        deliveryPlace: data.deliveryPlace,
+        itemDesc: itemDescLabel,
+      };
+
+      const docName = `見積書_${data.caseId}_${data.caseName}_${entry.style}`;
+      const templateFile = DriveApp.getFileById(master.docId);
+      const copyFile = templateFile.makeCopy(docName, folder);
+      const pdfUrl = generateEstimateDocumentWithAdapterV2_(
+        templateFile.getMimeType(),
+        copyFile.getId(),
+        master.manifest,
+        canonicalData,
+        data.items
+      );
+      results.push({
+        caseId: data.caseId,
+        org: data.org,
+        style: entry.style,
+        templateId: entry.manifestId,
+        priority: master.priority,
+        pdfUrl: pdfUrl,
+        amounts: amounts,
+      });
+    });
+
+    if (results.length === 0) {
+      throw new Error(`有効なテンプレが無いにゃん。スキップ：${skipped.join('、') || 'なし'}`);
+    }
+
+    const primary = selectPrimaryEstimateDocumentV2_(results);
+    writeEstimateGenerationResultV2_(caseSheet, row, data, primary);
+    verifyEstimateGenerationResultV2_(caseSheet, row, primary.pdfUrl);
+    results.forEach((result) => appendEstimateGenerationLogV2_(ss, data, result, 'success', '', ''));
+    return {
+      caseId: data.caseId,
+      org: data.org,
+      primaryPdfUrl: primary.pdfUrl,
+      primaryTemplateId: primary.templateId,
+      documents: results,
+      generatedAt: new Date(),
     };
-
-    const docName = `見積書_${data.caseId}_${data.caseName}_${entry.style}`;
-    const templateFile = DriveApp.getFileById(master.docId);
-    const copyFile = templateFile.makeCopy(docName, folder);
-    const pdfUrl = templateFile.getMimeType() === MimeType.GOOGLE_SHEETS
-      ? fillSpreadsheetTemplate_(copyFile.getId(), master.manifest, canonicalData, data.items)
-      : fillDocTemplate_(copyFile.getId(), master.manifest, canonicalData, data.items);
-    results.push({ caseId: data.caseId, org: data.org, style: entry.style, pdfUrl: pdfUrl });
-  });
-
-  if (results.length === 0) {
-    throw new Error(`有効なテンプレが無いにゃん。スキップ：${skipped.join('、') || 'なし'}`);
+  } catch (error) {
+    const generated = results.length ? results[0] : null;
+    appendEstimateGenerationLogV2_(ss, data, generated, 'failure', generated ? 'case-writeback-or-later' : 'pdf-generation', error.message);
+    if (generated) {
+      throw new Error(`PDFは生成されましたが、案件情報への保存に失敗しました：${error.message}\nPDF：${generated.pdfUrl}`);
+    }
+    throw error;
   }
+}
 
-  const pdfCol = getOrCreateColumnByHeader_(caseSheet, CASE_HEADERS.PDF_LINK);
-  caseSheet.getRange(row, pdfCol).setValue(results.map((r) => `【${r.style}】${r.pdfUrl}`).join('\n'));
-  return results;
+/** テンプレート形式の差異を生成コアから分離するAdapter入口。 */
+function generateEstimateDocumentWithAdapterV2_(mimeType, fileId, manifest, canonicalData, items) {
+  if (mimeType === MimeType.GOOGLE_SHEETS) {
+    return fillSpreadsheetTemplate_(fileId, manifest, canonicalData, items);
+  }
+  if (mimeType === MimeType.GOOGLE_DOCS) {
+    return fillDocTemplate_(fileId, manifest, canonicalData, items);
+  }
+  throw new Error(`未対応の見積書テンプレート形式にゃん：${mimeType}`);
+}
+
+function selectPrimaryEstimateDocumentV2_(documents) {
+  if (!Array.isArray(documents) || documents.length === 0) {
+    throw new Error('代表PDFを選択できる生成結果が無いにゃん。');
+  }
+  documents.sort((a, b) => a.priority - b.priority || a.templateId.localeCompare(b.templateId));
+  return documents[0];
+}
+
+function validateWorkbenchTargetV2_(workbenchCaseId, targetCaseId) {
+  const workbench = String(workbenchCaseId || '').trim();
+  const target = String(targetCaseId || '').trim();
+  if (!workbench || !target || workbench !== target) {
+    throw new Error('案件IDが一致しないため、案件への反映を中止したにゃん。');
+  }
+  return target;
 }
 
 /** payloadの必須項目・品目構造を共通化する */
@@ -460,6 +673,12 @@ function normalizeEstimatePayload_(payload) {
   if (items.length === 0) throw new Error('itemsが空にゃん。');
 
   const company = p.company || {};
+  const normalizedAmounts = calculateEstimateAmountsV2_(
+    p.amountExclusive !== undefined ? p.amountExclusive : p.amountTaxExclusive,
+    p.taxDisplay || 'exclusive',
+    p.taxRate === '' || p.taxRate == null ? 0.10 : p.taxRate,
+    p.roundingMode || 'round'
+  );
   return {
     caseId: String(p.caseId).trim(),
     caseName: String(p.caseName).trim(),
@@ -467,7 +686,14 @@ function normalizeEstimatePayload_(payload) {
     estimateDate: p.estimateDate ? new Date(p.estimateDate) : new Date(),
     deadline: p.deadline || '',
     deliveryPlace: p.deliveryPlace || '仕様書のとおり',
-    amountTaxExclusive: Number(p.amountTaxExclusive) || 0,
+    amountExclusive: normalizedAmounts.amountExclusive,
+    taxAmount: normalizedAmounts.taxAmount,
+    amountInclusive: normalizedAmounts.amountInclusive,
+    submittedAmount: normalizedAmounts.submittedAmount,
+    taxDisplay: String(p.taxDisplay || '').trim(),
+    taxRate: p.taxRate,
+    roundingMode: String(p.roundingMode || '').trim(),
+    generationSource: String(p.generationSource || 'unknown').trim(),
     items: items,
     company: {
       name: company.name || '', address: company.address || '',
@@ -477,6 +703,239 @@ function normalizeEstimatePayload_(payload) {
       contactName: company.contactName || '', contactPhone: company.contactPhone || '',
     },
   };
+}
+
+function writeEstimateGenerationResultV2_(caseSheet, row, data, primary) {
+  const fields = {};
+  fields[CASE_HEADERS.AMOUNT] = primary.amounts.amountExclusive;
+  fields[CASE_HEADERS.TAX_DISPLAY] = primary.amounts.taxDisplay;
+  fields[CASE_HEADERS.TAX_RATE] = primary.amounts.taxRate;
+  fields[CASE_HEADERS.ROUNDING_MODE] = primary.amounts.roundingMode;
+  fields[CASE_HEADERS.PDF_LINK] = primary.pdfUrl;
+  fields[CASE_HEADERS.GENERATED_AT] = new Date();
+  fields[CASE_HEADERS.TEMPLATE_ID] = primary.templateId;
+  fields[CASE_HEADERS.GENERATION_STATUS] = 'generated';
+  fields[CASE_HEADERS.GENERATION_SOURCE] = data.generationSource;
+  fields[CASE_HEADERS.BUSINESS_PROFILE_ID] = data.company.profileId || '';
+
+  Object.keys(fields).forEach((header) => {
+    const col = getOrCreateColumnByHeader_(caseSheet, header);
+    caseSheet.getRange(row, col).setValue(fields[header]);
+  });
+  SpreadsheetApp.flush();
+}
+
+function verifyEstimateGenerationResultV2_(caseSheet, row, expectedPdfUrl) {
+  const map = getHeaderMap_(caseSheet);
+  const pdfUrl = map[CASE_HEADERS.PDF_LINK]
+    ? String(caseSheet.getRange(row, map[CASE_HEADERS.PDF_LINK]).getValue() || '').trim()
+    : '';
+  const status = map[CASE_HEADERS.GENERATION_STATUS]
+    ? String(caseSheet.getRange(row, map[CASE_HEADERS.GENERATION_STATUS]).getValue() || '').trim()
+    : '';
+  if (pdfUrl !== String(expectedPdfUrl).trim() || status !== 'generated') {
+    throw new Error('01_案件管理への生成結果書き戻しを検証できなかったにゃん。');
+  }
+}
+
+function appendEstimateGenerationLogV2_(ss, data, result, outcome, errorStage, errorMessage) {
+  try {
+    const sheet = ensureSheetWithHeadersV2_(ss, ESTIMATE_V2_LOG_SHEET, ESTIMATE_V2_LOG_HEADERS);
+    const amounts = result && result.amounts
+      ? result.amounts
+      : calculateEstimateAmountsV2_(data.amountExclusive, data.taxDisplay || 'exclusive', data.taxRate, data.roundingMode || 'round');
+    const row = {
+      'ログID': Utilities.getUuid(),
+      '案件ID': data.caseId,
+      '書類種別': '見積書',
+      '生成日時': new Date(),
+      'テンプレートID': result ? result.templateId : '',
+      '様式名': result ? result.style : '',
+      '税抜額': amounts.amountExclusive,
+      '税額': amounts.taxAmount,
+      '税込額': amounts.amountInclusive,
+      '提出金額': amounts.submittedAmount,
+      '税表示': amounts.taxDisplay,
+      '税率': amounts.taxRate,
+      '端数処理': amounts.roundingMode,
+      'PDF URL': result ? result.pdfUrl : '',
+      '生成経路': data.generationSource,
+      '成否': outcome,
+      'エラー段階': errorStage || '',
+      'エラー内容': errorMessage || '',
+    };
+    sheet.appendRow(ESTIMATE_V2_LOG_HEADERS.map((header) => row[header]));
+  } catch (logError) {
+    Logger.log('見積書生成ログ保存失敗: ' + logError.stack);
+  }
+}
+
+function ensureSheetWithHeadersV2_(ss, sheetName, requiredHeaders) {
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) sheet = ss.insertSheet(sheetName);
+  const existing = sheet.getLastColumn() > 0
+    ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0].map((v) => String(v || '').trim())
+    : [];
+  requiredHeaders.forEach((header) => {
+    const matches = existing.filter((value) => value === header).length;
+    if (matches > 1) throw new Error(`${sheetName}のヘッダー「${header}」が重複しているにゃん。`);
+    if (matches === 1) return;
+    const col = sheet.getLastColumn() + 1;
+    sheet.getRange(1, col).setValue(header);
+    existing.push(header);
+  });
+  if (sheet.getFrozenRows() < 1) sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function findRowByHeaderValueV2_(sheet, headerName, value) {
+  const map = getHeaderMap_(sheet);
+  if (!map[headerName] || sheet.getLastRow() < 2) return 0;
+  const target = String(value || '').trim();
+  const values = sheet.getRange(2, map[headerName], sheet.getLastRow() - 1, 1).getDisplayValues();
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][0] || '').trim() === target) return i + 2;
+  }
+  return 0;
+}
+
+/**
+ * Ver2初期設定。既存行は変更せず、不足シート・不足列だけを追加する。
+ * 事業者設定の初期値は旧作業台から一度だけ移行する。
+ */
+function setupEstimateV2() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const caseSheet = ss.getSheetByName(CASE_SHEET_NAME);
+  if (!caseSheet) throw new Error(`「${CASE_SHEET_NAME}」が見つからないにゃん。`);
+  [
+    CASE_HEADERS.TAX_DISPLAY, CASE_HEADERS.TAX_RATE, CASE_HEADERS.ROUNDING_MODE,
+    CASE_HEADERS.PDF_LINK, CASE_HEADERS.GENERATED_AT, CASE_HEADERS.TEMPLATE_ID,
+    CASE_HEADERS.GENERATION_STATUS, CASE_HEADERS.GENERATION_SOURCE, CASE_HEADERS.BUSINESS_PROFILE_ID
+  ].forEach((header) => getOrCreateColumnByHeader_(caseSheet, header));
+
+  const businessSheet = ensureSheetWithHeadersV2_(ss, ESTIMATE_V2_BUSINESS_SHEET, ESTIMATE_V2_BUSINESS_HEADERS);
+  const defaultProfileRow = findRowByHeaderValueV2_(
+    businessSheet,
+    '設定ID',
+    ESTIMATE_V2_DEFAULT_PROFILE_ID
+  );
+  if (!defaultProfileRow && businessSheet.getLastRow() < 2) {
+    const workSheet = ss.getSheetByName(ESTIMATE_WORK_SHEET_NAME);
+    const old = (label) => workSheet ? getOptionalValueByLabel_(workSheet, label) : '';
+    const initial = {
+      '設定ID': ESTIMATE_V2_DEFAULT_PROFILE_ID,
+      '有効': true,
+      'デフォルト': true,
+      '商号': old(COMPANY_LABELS.NAME),
+      '郵便番号': '',
+      '住所': old(COMPANY_LABELS.ADDRESS),
+      '代表者役職': '',
+      '代表者氏名': old(COMPANY_LABELS.REP),
+      '本件責任者': old(COMPANY_LABELS.RESPONSIBLE),
+      '担当者': old(COMPANY_LABELS.CONTACT),
+      '電話': old(COMPANY_LABELS.RESPONSIBLE_PHONE),
+      '担当者電話': old(COMPANY_LABELS.CONTACT_PHONE),
+      'FAX': '',
+      'メール': '',
+      '適格請求書発行事業者登録番号': '',
+      '更新日時': new Date(),
+    };
+    businessSheet.appendRow(ESTIMATE_V2_BUSINESS_HEADERS.map((header) => initial[header]));
+  }
+  ensureSheetWithHeadersV2_(ss, ESTIMATE_V2_LOG_SHEET, ESTIMATE_V2_LOG_HEADERS);
+  const masterSs = SpreadsheetApp.openById(TEMPLATE_MASTER_SS_ID);
+  const masterSheet = masterSs.getSheetByName(TEMPLATE_MASTER_SHEET_NAME);
+  if (!masterSheet) throw new Error(`テンプレ管理マスターに「${TEMPLATE_MASTER_SHEET_NAME}」が見つからないにゃん。`);
+  ensureHeadersV43_(masterSheet, [
+    MASTER_HEADERS.PRIORITY,
+    MASTER_HEADERS.TAX_DISPLAY,
+    MASTER_HEADERS.TAX_RATE,
+    MASTER_HEADERS.ROUNDING_MODE,
+  ]);
+  ensureSheetWithHeadersV2_(masterSs, TEMPLATE_MASTER_SHEET_NAME, [
+    MASTER_HEADERS.PRIORITY,
+    MASTER_HEADERS.TAX_DISPLAY,
+    MASTER_HEADERS.TAX_RATE,
+    MASTER_HEADERS.ROUNDING_MODE,
+  ]);
+  SpreadsheetApp.getActive().toast('見積書Ver2の初期設定が完了したにゃん 🐈', '見積書Ver2', 5);
+}
+
+function assertEstimateV2_(condition, message) {
+  if (!condition) throw new Error('見積書Ver2テスト失敗: ' + message);
+}
+
+/** Driveやシートを変更しない純粋関数テスト。 */
+function testEstimateV2PureFunctions() {
+  const exclusive = calculateEstimateAmountsV2_(72727, 'exclusive', 0.10, 'round');
+  assertEstimateV2_(exclusive.amountExclusive === 72727, '税抜元金');
+  assertEstimateV2_(exclusive.taxAmount === 7273, '税額の四捨五入');
+  assertEstimateV2_(exclusive.amountInclusive === 80000, '税込額');
+  assertEstimateV2_(exclusive.submittedAmount === 72727, '税抜提出額');
+
+  const inclusive = calculateEstimateAmountsV2_(72727, 'inclusive', 0.10, 'round');
+  assertEstimateV2_(inclusive.submittedAmount === 80000, '税込提出額');
+
+  const none = calculateEstimateAmountsV2_(72727, 'none', 0.10, 'round');
+  assertEstimateV2_(none.taxAmount === 0 && none.amountInclusive === 72727, '非課税');
+
+  const floor = calculateEstimateAmountsV2_(10001, 'inclusive', 0.10, 'floor');
+  const ceil = calculateEstimateAmountsV2_(10001, 'inclusive', 0.10, 'ceil');
+  assertEstimateV2_(floor.taxAmount === 1000, '切り捨て');
+  assertEstimateV2_(ceil.taxAmount === 1001, '切り上げ');
+
+  const candidates = [
+    { templateId: 'B', priority: 20 },
+    { templateId: 'A', priority: 10 },
+  ];
+  assertEstimateV2_(selectPrimaryEstimateDocumentV2_(candidates).templateId === 'A', '代表PDF優先順位');
+  assertEstimateV2_(validateWorkbenchTargetV2_('2026-07-008', '2026-07-008') === '2026-07-008', '案件ID一致');
+  let mismatchRejected = false;
+  try {
+    validateWorkbenchTargetV2_('2026-07-003', '2026-07-008');
+  } catch (e) {
+    mismatchRejected = true;
+  }
+  assertEstimateV2_(mismatchRejected, '案件ID不一致拒否');
+  return { success: true, tested: 8 };
+}
+
+/** 03_見積書の確定値を、明示操作で対象案件だけへ反映する。 */
+function applyWorkbenchToCase() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const workSheet = ss.getSheetByName(ESTIMATE_WORK_SHEET_NAME);
+  if (!workSheet) throw new Error(`「${ESTIMATE_WORK_SHEET_NAME}」が見つからないにゃん。`);
+  const workbenchCaseId = String(getValueByLabel_(workSheet, WORK_LABELS.CASE_ID) || '').trim();
+  const ref = findCaseRowById_(ss, workbenchCaseId);
+  const caseMap = getHeaderMap_(ref.caseSheet);
+  const caseId = String(ref.caseSheet.getRange(ref.row, caseMap[CASE_HEADERS.CASE_ID]).getValue() || '').trim();
+  try {
+    validateWorkbenchTargetV2_(workbenchCaseId, caseId);
+  } catch (idError) {
+    ui.alert(idError.message);
+    return;
+  }
+  const items = readItemsFromWorkbench_(workSheet);
+  const amount = items.reduce((sum, item) => sum + (parseEstimateNumberV2_(item.amount) || 0), 0);
+  if (!(amount > 0)) {
+    ui.alert('反映できる見積金額が無いにゃん。');
+    return;
+  }
+  const caseName = String(ref.caseSheet.getRange(ref.row, caseMap[CASE_HEADERS.CASE_NAME]).getValue() || '').trim();
+  const taxDisplay = getOptionalValueByLabel_(workSheet, '税表示') ||
+    (caseMap[CASE_HEADERS.TAX_DISPLAY] ? String(ref.caseSheet.getRange(ref.row, caseMap[CASE_HEADERS.TAX_DISPLAY]).getValue() || '') : 'exclusive');
+  const confirmed = ui.alert(
+    '案件へ反映する内容を確認してほしいにゃん',
+    `案件ID：${caseId}\n案件名：${caseName}\n反映金額（税抜）：${formatYen_(amount)}円\n税表示：${taxDisplay || 'exclusive'}`,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (confirmed !== ui.Button.OK) return;
+  ref.caseSheet.getRange(ref.row, caseMap[CASE_HEADERS.AMOUNT]).setValue(amount);
+  const taxCol = getOrCreateColumnByHeader_(ref.caseSheet, CASE_HEADERS.TAX_DISPLAY);
+  ref.caseSheet.getRange(ref.row, taxCol).setValue(taxDisplay || 'exclusive');
+  SpreadsheetApp.flush();
+  ui.alert(`案件ID ${caseId} へ見積内容を反映したにゃん🐈`);
 }
 
 /** 案件IDで01_案件管理を全行検索し、書戻し先を返す */
@@ -489,7 +948,7 @@ function findCaseRowById_(ss, caseId) {
   const found = caseSheet.getRange(2, headerMap[CASE_HEADERS.CASE_ID], Math.max(lastRow - 1, 1), 1)
     .createTextFinder(String(caseId).trim()).matchEntireCell(true).matchCase(false).findNext();
   if (!found) throw new Error(`案件ID「${caseId}」が01_案件管理に見つからないにゃん。`);
-  return { caseSheet: caseSheet, row: found.getRow() };
+  return { sheet: caseSheet, caseSheet: caseSheet, row: found.getRow(), headerMap: headerMap };
 }
 
 /** JSONコアの接続確認用。PDFは生成せず、payload構造だけログ出力する。 */
@@ -585,6 +1044,18 @@ function getManifestById_(manifestId) {
         docId: String(r[headerMap[MASTER_HEADERS.DOC_ID] - 1]).trim(),
         manifest: manifest,
         active: headerMap[MASTER_HEADERS.ACTIVE] ? r[headerMap[MASTER_HEADERS.ACTIVE] - 1] : true,
+        priority: headerMap[MASTER_HEADERS.PRIORITY]
+          ? (Number(r[headerMap[MASTER_HEADERS.PRIORITY] - 1]) || 9999)
+          : (Number(manifest.priority) || 9999),
+        taxDisplay: headerMap[MASTER_HEADERS.TAX_DISPLAY]
+          ? String(r[headerMap[MASTER_HEADERS.TAX_DISPLAY] - 1] || '').trim()
+          : '',
+        taxRate: headerMap[MASTER_HEADERS.TAX_RATE]
+          ? r[headerMap[MASTER_HEADERS.TAX_RATE] - 1]
+          : '',
+        roundingMode: headerMap[MASTER_HEADERS.ROUNDING_MODE]
+          ? String(r[headerMap[MASTER_HEADERS.ROUNDING_MODE] - 1] || '').trim()
+          : '',
         addressee1: headerMap[MASTER_HEADERS.ADDR1] ? r[headerMap[MASTER_HEADERS.ADDR1] - 1] : '',
         addressee2: headerMap[MASTER_HEADERS.ADDR2] ? r[headerMap[MASTER_HEADERS.ADDR2] - 1] : '',
         addresseeName: headerMap[MASTER_HEADERS.ADDR_NAME] ? r[headerMap[MASTER_HEADERS.ADDR_NAME] - 1] : '',
@@ -682,14 +1153,24 @@ function resetAndSeedItemsForCase_(workSheet, data) {
   });
 
   const firstRow = headerRow + 1;
-  const clearCols = Math.max.apply(null, required.map((name) => colMap[name]));
-  workSheet.getRange(firstRow, 1, MAX_ITEM_ROWS, clearCols).clearContent();
+  required.forEach((name) => {
+    clearNonFormulaCellsV2_(workSheet, firstRow, colMap[name], MAX_ITEM_ROWS);
+  });
 
   workSheet.getRange(firstRow, colMap['品名']).setValue(data.caseName || '');
   workSheet.getRange(firstRow, colMap['仕様・型番']).setValue('仕様書のとおり');
   workSheet.getRange(firstRow, colMap['数量']).setValue(1);
   workSheet.getRange(firstRow, colMap['単位']).setValue('式');
   // 単価・金額は手入力。前案件の値を残さないことを優先する。
+}
+
+/** 案件切替時も数式セルは保持し、入力値だけを消去する。 */
+function clearNonFormulaCellsV2_(sheet, firstRow, column, rowCount) {
+  const range = sheet.getRange(firstRow, column, rowCount, 1);
+  const formulas = range.getFormulas();
+  for (let i = 0; i < rowCount; i++) {
+    if (!formulas[i][0]) sheet.getRange(firstRow + i, column).clearContent();
+  }
 }
 
 /** 作業台の品目テーブルを、品名が空になるまで可変長で読み取る */
@@ -1015,11 +1496,16 @@ function findRowByValueV43_(sheet, col, value) {
  * 複数テンプレ生成結果の先頭1件をWebアプリへ返す。
  */
 function generateEstimateForRow_(ss, caseSheet, row) {
-  const results = generateEstimatesForRow_(ss, caseSheet, row);
-
-  if (!Array.isArray(results) || results.length === 0) {
+  const result = generateEstimatesForRow_(ss, caseSheet, row);
+  if (!result || !result.primaryPdfUrl) {
     throw new Error('見積書の生成結果を取得できなかったにゃん。');
   }
-
-  return results[0];
+  return {
+    caseId: result.caseId,
+    org: result.org,
+    pdfUrl: result.primaryPdfUrl,
+    primaryPdfUrl: result.primaryPdfUrl,
+    documents: result.documents,
+    generatedAt: result.generatedAt,
+  };
 }

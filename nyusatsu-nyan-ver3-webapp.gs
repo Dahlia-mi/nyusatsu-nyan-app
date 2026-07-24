@@ -148,7 +148,7 @@ function findCaseRowById_(ss, caseId) {
   const idValues = caseSheet.getRange(2, idCol, lastRow - 1, 1).getValues();
   for (let i = 0; i < idValues.length; i++) {
     if (String(idValues[i][0]).trim() === target) {
-      return { sheet: caseSheet, row: i + 2, headerMap: headerMap };
+      return { sheet: caseSheet, caseSheet: caseSheet, row: i + 2, headerMap: headerMap };
     }
   }
   throw new Error(`案件ID「${caseId}」が01_案件管理に見つからないにゃん。`);
@@ -320,14 +320,22 @@ function api_generateEstimate(caseId) {
     if (!caseId) return apiError_('案件IDが指定されていないにゃん。');
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const found = findCaseRowById_(ss, caseId);
-
-    // 既存Ver3ロジックを再利用（このファイルでは再実装しない）
-    const result = generateEstimateForRow_(ss, found.sheet, found.row);
+    const payload = buildEstimatePayloadV2FromRow_(ss, found.sheet, found.row, 'web-app');
+    const result = generateEstimateFromPayload_(payload, {
+      ss: ss,
+      caseSheet: found.sheet,
+      row: found.row,
+    });
+    const refreshedHeaderMap = getHeaderMap_(found.sheet);
+    const caseData = buildCaseObject_(found.sheet, refreshedHeaderMap, found.row);
 
     return apiOk_({
       caseId: result.caseId,
       org: result.org,
-      pdfUrl: result.pdfUrl,
+      pdfUrl: result.primaryPdfUrl,
+      primaryPdfUrl: result.primaryPdfUrl,
+      documents: result.documents,
+      caseData: caseData,
     });
   } catch (e) {
     return apiError_(e.message);
