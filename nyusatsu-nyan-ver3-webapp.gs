@@ -148,7 +148,7 @@ function findCaseRowById_(ss, caseId) {
   const idValues = caseSheet.getRange(2, idCol, lastRow - 1, 1).getValues();
   for (let i = 0; i < idValues.length; i++) {
     if (String(idValues[i][0]).trim() === target) {
-      return { sheet: caseSheet, row: i + 2, headerMap: headerMap };
+      return { sheet: caseSheet, caseSheet: caseSheet, row: i + 2, headerMap: headerMap };
     }
   }
   throw new Error(`案件ID「${caseId}」が01_案件管理に見つからないにゃん。`);
@@ -162,14 +162,61 @@ function buildCaseObject_(caseSheet, headerMap, row) {
     return caseSheet.getRange(row, col).getValue();
   };
 
+  const caseId = String(readCell(CASE_HEADERS.CASE_ID)).trim();
+  const fallbackCostSummary = {
+    caseId: caseId,
+    costStatus: 'missing',
+    statusSource: '',
+    matchedRowCount: 0,
+    confirmedRowCount: 0,
+    reviewRowCount: 0,
+    amountTaxExclusive: null,
+    amountTaxInclusive: null,
+    taxStatus: 'unknown',
+    unknownTaxRowCount: 0,
+    warnings: ['原価情報を取得できませんでした'],
+  };
+  let estimateSummary = {
+    schemaVersion: '1.0',
+    caseId: caseId,
+    summaryStatus: 'incomplete',
+    estimate: {
+      status: 'unavailable',
+      source: CASE_HEADERS.AMOUNT,
+      amountTaxExclusive: null,
+      amountTaxInclusive: null,
+      taxStatus: 'unknown',
+    },
+    cost: fallbackCostSummary,
+    profit: {
+      status: 'unavailable',
+      basis: 'tax_exclusive',
+      amountTaxExclusive: null,
+      amountTaxInclusive: null,
+      marginRate: null,
+      marginPercent: null,
+      marginDisplayDecimals: 1,
+    },
+    warnings: ['見積サマリーを取得できませんでした'],
+  };
+  try {
+    if (typeof calculateEstimateSummary === 'function') {
+      estimateSummary = calculateEstimateSummary(caseId);
+    }
+  } catch (summaryError) {
+    Logger.log('estimateSummary warning: ' + summaryError.stack);
+  }
+
   return {
-    caseId: String(readCell(CASE_HEADERS.CASE_ID)).trim(),
+    caseId: caseId,
     caseName: String(readCell(CASE_HEADERS.CASE_NAME)).trim(),
     org: String(readCell(CASE_HEADERS.ORG)).trim(),
     amount: toDisplayAmount_(readCell(CASE_HEADERS.AMOUNT)),
     deadline: toDisplayDate_(readCell(CASE_HEADERS.DEADLINE)),
     pdfUrl: String(readCell(CASE_HEADERS.PDF_LINK) || '').trim(),
     status: String(readCell(WEBAPP_STATUS_HEADER) || '').trim(),
+    costSummary: estimateSummary.cost,
+    estimateSummary: estimateSummary,
   };
 }
 
@@ -252,6 +299,85 @@ function api_getCaseDetail(caseId) {
   }
 }
 
+/**
+ * 案件IDを指定し、正本から再計算した現在の見積サマリーを返す。
+ * @param {string} caseId
+ */
+function api_getEstimateSummary(caseId) {
+  try {
+    if (!caseId) return apiError_('案件IDが指定されていないにゃん。');
+    return apiOk_({ estimateSummary: calculateEstimateSummary(caseId) });
+  } catch (e) {
+    return apiError_(e.message);
+  }
+}
+
+/**
+ * 案件IDを指定して、01_案件管理の想定入札額(税抜)を更新する。
+ * 見積書Ver2は同じ列を正本として参照する。
+ * @param {string} caseId
+ * @param {number|string} newAmount
+ */
+function api_updateExpectedBidAmount(caseId, newAmount) {
+  let lock = null;
+  let lockAcquired = false;
+  try {
+    if (!caseId) return apiError_('案件IDが指定されていないにゃん。');
+
+    const normalized = String(newAmount == null ? '' : newAmount)
+      .replace(/[￥¥,\s]/g, '');
+    if (!/^\d+$/.test(normalized)) {
+      return apiError_('想定入札額は1円単位の数字で入力してほしいにゃん。');
+    }
+    const amount = Number(normalized);
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      return apiError_('想定入札額は1円以上の有効な金額で入力してほしいにゃん。');
+    }
+
+    lock = LockService.getDocumentLock();
+    lockAcquired = lock.tryLock(10000);
+    if (!lockAcquired) {
+      return apiError_('ほかの更新処理中にゃん。少し待ってから、もう一度保存してほしいにゃん。');
+    }
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    // ロック待機中に行位置や値が変わる可能性があるため、取得後に必ず検索し直す。
+    const found = findCaseRowById_(ss, caseId);
+    const amountCol = found.headerMap[CASE_HEADERS.AMOUNT];
+    if (!amountCol) {
+      return apiError_(`01_案件管理に「${CASE_HEADERS.AMOUNT}」列が見つからないにゃん。`);
+    }
+
+    const updatedAtCol = found.headerMap[WEBAPP_UPDATED_AT_HEADER];
+    const now = new Date();
+    const amountCell = found.sheet.getRange(found.row, amountCol);
+    const previousAmount = amountCell.getValue();
+    const updatedAtCell = updatedAtCol ? found.sheet.getRange(found.row, updatedAtCol) : null;
+    const previousUpdatedAt = updatedAtCell ? updatedAtCell.getValue() : null;
+
+    try {
+      amountCell.setValue(amount);
+      if (updatedAtCell) updatedAtCell.setValue(now);
+    } catch (writeError) {
+      try {
+        amountCell.setValue(previousAmount);
+        if (updatedAtCell) updatedAtCell.setValue(previousUpdatedAt);
+      } catch (rollbackError) {}
+      throw writeError;
+    }
+
+    const refreshedHeaderMap = getHeaderMap_(found.sheet);
+    return apiOk_({
+      case: buildCaseObject_(found.sheet, refreshedHeaderMap, found.row),
+      updatedAt: now.toISOString(),
+    });
+  } catch (e) {
+    return apiError_(e.message);
+  } finally {
+    if (lockAcquired && lock) lock.releaseLock();
+  }
+}
+
 // ── API：案件状態更新 ────────────────────────────────────────
 
 /**
@@ -320,14 +446,22 @@ function api_generateEstimate(caseId) {
     if (!caseId) return apiError_('案件IDが指定されていないにゃん。');
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const found = findCaseRowById_(ss, caseId);
-
-    // 既存Ver3ロジックを再利用（このファイルでは再実装しない）
-    const result = generateEstimateForRow_(ss, found.sheet, found.row);
+    const payload = buildEstimatePayloadV2FromRow_(ss, found.sheet, found.row, 'web-app');
+    const result = generateEstimateFromPayload_(payload, {
+      ss: ss,
+      caseSheet: found.sheet,
+      row: found.row,
+    });
+    const refreshedHeaderMap = getHeaderMap_(found.sheet);
+    const caseData = buildCaseObject_(found.sheet, refreshedHeaderMap, found.row);
 
     return apiOk_({
       caseId: result.caseId,
       org: result.org,
-      pdfUrl: result.pdfUrl,
+      pdfUrl: result.primaryPdfUrl,
+      primaryPdfUrl: result.primaryPdfUrl,
+      documents: result.documents,
+      caseData: caseData,
     });
   } catch (e) {
     return apiError_(e.message);

@@ -176,6 +176,23 @@
   dl.fields dt { color: var(--ink-soft); flex-shrink: 0; }
   dl.fields dd { margin: 0; text-align: right; word-break: break-all; }
   dd a { color: var(--mauve-deep); font-weight: 700; }
+  .amount-editor { width: min(100%, 230px); }
+  .amount-input-wrap {
+    display: flex; align-items: center; border: 1.5px solid var(--line);
+    border-radius: 9px; background: #fff; overflow: hidden;
+  }
+  .amount-input-wrap:focus-within { border-color: var(--mauve); }
+  .amount-prefix { padding-left: 10px; color: var(--ink-soft); font-weight: 700; }
+  .amount-input {
+    width: 100%; min-width: 0; border: 0; outline: 0; background: transparent;
+    color: var(--ink); font: inherit; font-size: 16px; font-weight: 700;
+    text-align: right; padding: 10px;
+  }
+  .btn-save-amount {
+    width: 100%; min-height: 42px; margin-top: 7px; border: 0; border-radius: 9px;
+    background: var(--plum); color: #fff; font: inherit; font-weight: 700;
+  }
+  .btn-save-amount[disabled] { opacity: .45; }
 
   /* ── ボタン ── */
   .btn-primary {
@@ -484,7 +501,17 @@
       <div class="detail-org" id="dOrg">—</div>
       <dl class="fields">
         <div><dt>案件ID</dt><dd id="dCaseId">—</dd></div>
-        <div><dt>想定入札額(税抜)</dt><dd id="dAmount">—</dd></div>
+        <div>
+          <dt>想定入札額(税抜)</dt>
+          <dd class="amount-editor">
+            <label class="amount-input-wrap">
+              <span class="amount-prefix">¥</span>
+              <input class="amount-input" id="dAmountInput" type="text" inputmode="numeric"
+                autocomplete="off" aria-label="想定入札額（税抜）">
+            </label>
+            <button class="btn-save-amount" id="btnSaveAmount" type="button" disabled>金額を保存</button>
+          </dd>
+        </div>
         <div><dt>納品期限</dt><dd id="dDeadline">—</dd></div>
         <div><dt>見積書PDF</dt><dd id="dPdf">未生成</dd></div>
       </dl>
@@ -1031,7 +1058,8 @@ function renderDetail() {
   $('dCaseName').textContent = c.caseName || '(案件名なし)';
   $('dOrg').textContent = c.org || '発注機関 未設定';
   $('dCaseId').textContent = c.caseId;
-  $('dAmount').textContent = c.amount ? '¥' + c.amount : '未入力';
+  $('dAmountInput').value = c.amount || '';
+  $('btnSaveAmount').disabled = true;
   $('dDeadline').textContent = c.deadline || '未入力';
 
   var pdfEl = $('dPdf');
@@ -1042,6 +1070,40 @@ function renderDetail() {
   }
 
   $('btnGenerate').textContent = c.pdfUrl ? '見積書を再生成する' : '見積書を生成する';
+  $('btnGenerate').disabled = false;
+}
+
+function normalizeAmountInput(value) {
+  return String(value == null ? '' : value).replace(/[￥¥,\s]/g, '');
+}
+
+function updateAmountEditorState() {
+  var c = state.currentCase;
+  if (!c) return;
+  var input = $('dAmountInput');
+  var normalized = normalizeAmountInput(input.value);
+  var saved = normalizeAmountInput(c.amount);
+  var dirty = normalized !== saved;
+  $('btnSaveAmount').disabled = !dirty || !/^\d+$/.test(normalized) || Number(normalized) <= 0;
+  $('btnGenerate').disabled = dirty;
+}
+
+function saveExpectedBidAmount() {
+  var c = state.currentCase;
+  if (!c) return;
+  var button = $('btnSaveAmount');
+  var amount = normalizeAmountInput($('dAmountInput').value);
+  button.disabled = true;
+  callApi('api_updateExpectedBidAmount', [c.caseId, amount], '想定入札額を保存中にゃん…', function (data) {
+    var refreshed = data.case;
+    state.currentCase = refreshed;
+    var index = state.cases.findIndex(function (item) { return item.caseId === refreshed.caseId; });
+    if (index >= 0) state.cases[index] = refreshed;
+    renderDetail();
+    showToast('想定入札額を保存したにゃん');
+  }, function () {
+    updateAmountEditorState();
+  });
 }
 
 // ── 見積書生成 ──────────────────────────────────
@@ -1057,11 +1119,13 @@ function generateEstimate() {
 
   callApi('api_generateEstimate', [c.caseId], '見積書を生成中にゃん…（20秒ほどかかるにゃん）', function (data) {
     $('doneMeta').textContent = '案件ID ' + data.caseId + '／' + data.org;
-    $('donePdfLink').setAttribute('href', data.pdfUrl);
-    // 一覧・詳細キャッシュにも反映
-    c.pdfUrl = data.pdfUrl;
-    var inList = state.cases.find(function (x) { return x.caseId === c.caseId; });
-    if (inList) inList.pdfUrl = data.pdfUrl;
+    $('donePdfLink').setAttribute('href', data.primaryPdfUrl || data.pdfUrl);
+    // サーバーで書き戻し検証後に再取得した案件データを正として反映する。
+    var refreshed = data.caseData || c;
+    state.currentCase = refreshed;
+    var index = state.cases.findIndex(function (x) { return x.caseId === refreshed.caseId; });
+    if (index >= 0) state.cases[index] = refreshed;
+    renderCaseList();
     showView('done');
   });
 }
@@ -1731,6 +1795,8 @@ function cancelExtract() {
 
 $('btnRefresh').addEventListener('click', loadCases);
 $('btnGenerate').addEventListener('click', generateEstimate);
+$('dAmountInput').addEventListener('input', updateAmountEditorState);
+$('btnSaveAmount').addEventListener('click', saveExpectedBidAmount);
 $('btnBackFromDetail').addEventListener('click', function (e) {
   e.preventDefault();
   renderCaseList();
