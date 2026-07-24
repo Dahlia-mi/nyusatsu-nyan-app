@@ -168,6 +168,39 @@
   }
   .detail-card h2 { font-size: 18px; margin: 0 0 4px; }
   .detail-org { color: var(--ink-soft); font-size: 14px; margin-bottom: 14px; }
+  .supplier-section { margin-top: 18px; }
+  .section-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 0 10px; }
+  .section-heading h3 { margin:0; font-size:18px; }
+  .btn-compact { border:0; border-radius:10px; padding:10px 12px; background:var(--mauve-deep); color:#fff; font-weight:700; }
+  .supplier-card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:10px; }
+  .supplier-card.adopted { border:2px solid var(--mauve); }
+  .supplier-title { display:flex; justify-content:space-between; gap:8px; font-weight:700; }
+  .supplier-badge { flex:none; color:var(--mauve-deep); font-size:12px; }
+  .supplier-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; font-size:13px; }
+  .supplier-grid span { display:block; color:var(--ink-soft); font-size:11px; }
+  .supplier-note { white-space:pre-wrap; overflow-wrap:anywhere; margin-top:8px; font-size:13px; }
+  .supplier-actions { display:flex; gap:8px; margin-top:12px; }
+  .supplier-actions button, .supplier-actions a { flex:1; min-width:0; text-align:center; padding:10px 6px; border-radius:9px; font-weight:700; font-size:13px; text-decoration:none; }
+  .btn-outline { border:1px solid var(--mauve); color:var(--mauve-deep); background:#fff; }
+  .profit-card { background:#f7faf9; border-radius:14px; padding:14px; margin:12px 0; }
+  .profit-row { display:flex; justify-content:space-between; gap:12px; padding:5px 0; }
+  .profit-card.loss { background:#fff1f1; color:#a52222; }
+  .supplier-warning { color:#a35b00; font-size:13px; margin-top:8px; }
+  .supplier-form-wrap { display:none; background:#fff; border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px; }
+  .supplier-form-wrap.show { display:block; }
+  .supplier-form-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .supplier-form-grid .wide { grid-column:1 / -1; }
+  .supplier-form-grid label { display:block; font-size:12px; color:var(--ink-soft); }
+  .supplier-form-grid input, .supplier-form-grid select, .supplier-form-grid textarea {
+    width:100%; box-sizing:border-box; margin-top:4px; padding:11px; border:1px solid var(--line);
+    border-radius:9px; background:#fff; color:var(--ink); font-size:16px;
+  }
+  .supplier-form-grid textarea { min-height:74px; resize:vertical; }
+  .form-error { color:#a52222; font-size:13px; min-height:20px; margin-top:8px; }
+  @media (max-width:480px) {
+    .supplier-grid, .supplier-form-grid { grid-template-columns:1fr; }
+    .supplier-form-grid .wide { grid-column:auto; }
+  }
   dl.fields { margin: 0; }
   dl.fields > div {
     display: flex; justify-content: space-between; gap: 12px;
@@ -518,6 +551,32 @@
     </div>
     <button class="btn-primary" id="btnGenerate" type="button">見積書を生成する</button>
     <div class="hint">対応表にテンプレート登録済みの発注機関のみ生成できます</div>
+    <div class="supplier-section">
+      <div class="section-heading">
+        <h3>業者見積</h3>
+        <button class="btn-compact" id="btnAddSupplierEstimate" type="button">＋ 追加</button>
+      </div>
+      <div class="supplier-form-wrap" id="supplierEstimateFormWrap">
+        <input id="seEstimateId" type="hidden">
+        <div class="supplier-form-grid">
+          <label class="wide">仕入先名<input id="seSupplierName" type="text" autocomplete="organization" maxlength="200"></label>
+          <label>見積金額<input id="seQuoteAmount" type="text" inputmode="decimal" autocomplete="off"></label>
+          <label>税区分<select id="seTaxCategory"><option value="税抜">税抜</option><option value="税込">税込</option></select></label>
+          <label>送料区分<select id="seShippingCategory"><option value="送料込み">送料込み</option><option value="送料別">送料別</option><option value="不明">不明</option></select></label>
+          <label>送料金額<input id="seShippingAmount" type="text" inputmode="decimal" autocomplete="off"></label>
+          <label>納期<input id="seDeliveryDate" type="date"></label>
+          <label class="wide">見積書PDF URL<input id="sePdfUrl" type="url" inputmode="url" autocomplete="url" placeholder="https://"></label>
+          <label class="wide">備考<textarea id="seNote" maxlength="2000"></textarea></label>
+        </div>
+        <div class="form-error" id="supplierEstimateFormError" role="alert"></div>
+        <div class="supplier-actions">
+          <button class="btn-outline" id="btnCancelSupplierEstimate" type="button">キャンセル</button>
+          <button class="btn-compact" id="btnSaveSupplierEstimate" type="button">保存</button>
+        </div>
+      </div>
+      <div class="profit-card" id="supplierProfitSummary"></div>
+      <div id="supplierEstimateList"><div class="hint">読み込み中にゃん…</div></div>
+    </div>
   </section>
 
   <!-- ── ビュー3：生成完了 ── -->
@@ -692,6 +751,9 @@ var state = {
   extractDocuments: [],   // Ver2.0：同じ案件に紐づく資料一覧
   phase2Detail: null,      // Ver2.2-Final：編集中の案件カルテ
   phase2OriginalSnapshot: null, // Phase3.2A：対象4項目の編集前スナップショット
+  supplierEstimates: [],
+  supplierEstimateSummary: null,
+  supplierEstimateSubmitting: false,
 };
 
 // ── ユーティリティ ──────────────────────────────
@@ -1047,8 +1109,11 @@ function renderCaseList() {
 function openDetail(caseId) {
   callApi('api_getCaseDetail', [caseId], '案件情報を取得中にゃん…', function (data) {
     state.currentCase = data.case;
+    state.supplierEstimates = [];
+    state.supplierEstimateSummary = null;
     renderDetail();
     showView('detail');
+    loadSupplierEstimates();
   });
 }
 
@@ -1100,9 +1165,174 @@ function saveExpectedBidAmount() {
     var index = state.cases.findIndex(function (item) { return item.caseId === refreshed.caseId; });
     if (index >= 0) state.cases[index] = refreshed;
     renderDetail();
+    loadSupplierEstimates();
     showToast('想定入札額を保存したにゃん');
   }, function () {
     updateAmountEditorState();
+  });
+}
+
+function formatYen(value) {
+  return value === null || value === undefined || !isFinite(Number(value))
+    ? '—'
+    : Number(value).toLocaleString('ja-JP') + '円';
+}
+
+function loadSupplierEstimates() {
+  if (!state.currentCase) return;
+  callApi('api_listSupplierEstimates', [state.currentCase.caseId], '業者見積を読み込み中にゃん…', function(data) {
+    applySupplierEstimateData(data);
+  });
+}
+
+function applySupplierEstimateData(data) {
+  state.supplierEstimates = (data && data.estimates) || [];
+  state.supplierEstimateSummary = data && data.summary;
+  state.supplierEstimateSubmitting = false;
+  renderSupplierEstimates();
+}
+
+function renderSupplierEstimates() {
+  var summary = state.supplierEstimateSummary || {};
+  var summaryEl = $('supplierProfitSummary');
+  summaryEl.className = 'profit-card' + (summary.loss ? ' loss' : '');
+  summaryEl.innerHTML =
+    '<div class="profit-row"><span>想定入札額（税抜）</span><strong>' + formatYen(summary.expectedBidTaxExclusive) + '</strong></div>' +
+    '<div class="profit-row"><span>採用原価（税抜）</span><strong>' + formatYen(summary.adoptedCostTaxExclusive) + '</strong></div>' +
+    '<div class="profit-row"><span>想定利益</span><strong>' + formatYen(summary.expectedProfit) + '</strong></div>' +
+    '<div class="profit-row"><span>想定利益率</span><strong>' +
+      (summary.expectedProfitRate === null || summary.expectedProfitRate === undefined ? '—' : escapeHtml(summary.expectedProfitRate) + '%') +
+    '</strong></div>' +
+    (summary.loss ? '<div class="supplier-warning">⚠ 想定利益がマイナスです</div>' : '') +
+    ((summary.warnings || []).map(function(w) {
+      return '<div class="supplier-warning">⚠ ' + escapeHtml(w) + '</div>';
+    }).join(''));
+
+  var list = $('supplierEstimateList');
+  if (!state.supplierEstimates.length) {
+    list.innerHTML = '<div class="hint">業者見積はまだありません</div>';
+    return;
+  }
+  list.innerHTML = state.supplierEstimates.map(function(e) {
+    var safePdfUrl = /^https:\/\/[^\s"'<>]+$/i.test(String(e.pdfUrl || '').trim()) ? e.pdfUrl : '';
+    var pdfUrlNeedsReview = Boolean(e.pdfUrlNeedsReview || (e.pdfUrl && !safePdfUrl));
+    return '<article class="supplier-card' + (e.adopted ? ' adopted' : '') + '" data-estimate-id="' + escapeHtml(e.estimateId) + '">' +
+      '<div class="supplier-title"><span>' + escapeHtml(e.supplierName) + '</span>' +
+        (e.adopted ? '<span class="supplier-badge">採用中</span>' : '') + '</div>' +
+      '<div class="supplier-grid">' +
+        '<div><span>見積金額</span>' + formatYen(e.quoteAmount) + '（' + escapeHtml(e.taxCategory) + '）</div>' +
+        '<div><span>送料</span>' + escapeHtml(e.shippingCategory) +
+          (e.shippingAmount === null ? '' : ' ' + formatYen(e.shippingAmount)) + '</div>' +
+        '<div><span>納期</span>' + escapeHtml(e.deliveryDate || '未入力') + '</div>' +
+        '<div><span>更新日時</span>' + escapeHtml(e.updatedAt || '—') + '</div>' +
+        '<div><span>登録日時</span>' + escapeHtml(e.createdAt || '—') + '</div>' +
+        '<div><span>原価状態</span>' + escapeHtml(e.costStatus || (e.adopted ? '未確定' : '未採用')) + '</div>' +
+      '</div>' +
+      (e.note ? '<div class="supplier-note">' + escapeHtml(e.note) + '</div>' : '') +
+      (pdfUrlNeedsReview ? '<div class="supplier-warning">⚠ URL要確認</div>' : '') +
+      '<div class="supplier-actions">' +
+        (safePdfUrl ? '<a class="btn-outline" href="' + escapeHtml(safePdfUrl) + '" target="_blank" rel="noopener">PDFを開く</a>' : '') +
+        '<button class="btn-outline btn-edit-supplier" type="button">編集</button>' +
+        (e.adopted ? '' : '<button class="btn-compact btn-adopt-supplier" type="button">この見積を採用</button>') +
+      '</div></article>';
+  }).join('');
+  list.querySelectorAll('.btn-edit-supplier').forEach(function(button) {
+    button.addEventListener('click', function() {
+      editSupplierEstimate(button.closest('.supplier-card').getAttribute('data-estimate-id'));
+    });
+  });
+  list.querySelectorAll('.btn-adopt-supplier').forEach(function(button) {
+    button.addEventListener('click', function() {
+      adoptSupplierEstimate(button.closest('.supplier-card').getAttribute('data-estimate-id'));
+    });
+  });
+}
+
+function resetSupplierEstimateForm() {
+  $('seEstimateId').value = '';
+  $('seSupplierName').value = '';
+  $('seQuoteAmount').value = '';
+  $('seTaxCategory').value = '税抜';
+  $('seShippingCategory').value = '送料込み';
+  $('seShippingAmount').value = '';
+  $('seDeliveryDate').value = '';
+  $('sePdfUrl').value = '';
+  $('seNote').value = '';
+  $('supplierEstimateFormError').textContent = '';
+}
+
+function showSupplierEstimateForm(estimate) {
+  resetSupplierEstimateForm();
+  if (estimate) {
+    $('seEstimateId').value = estimate.estimateId;
+    $('seSupplierName').value = estimate.supplierName || '';
+    $('seQuoteAmount').value = estimate.quoteAmount;
+    $('seTaxCategory').value = estimate.taxCategory;
+    $('seShippingCategory').value = estimate.shippingCategory;
+    $('seShippingAmount').value = estimate.shippingAmount === null ? '' : estimate.shippingAmount;
+    $('seDeliveryDate').value = String(estimate.deliveryDate || '').slice(0, 10).replace(/\//g, '-');
+    $('sePdfUrl').value = estimate.pdfUrl || '';
+    $('seNote').value = estimate.note || '';
+  }
+  $('supplierEstimateFormWrap').classList.add('show');
+  $('seSupplierName').focus();
+}
+
+function editSupplierEstimate(estimateId) {
+  var estimate = state.supplierEstimates.find(function(item) { return item.estimateId === estimateId; });
+  if (estimate) showSupplierEstimateForm(estimate);
+}
+
+function validateSupplierEstimateForm(payload) {
+  if (!payload.supplierName) return '仕入先名を入力してください';
+  if (!/^\d+(?:\.\d+)?$/.test(payload.quoteAmount) || Number(payload.quoteAmount) < 0) return '見積金額は0以上の数字で入力してください';
+  if (payload.shippingAmount && (!/^\d+(?:\.\d+)?$/.test(payload.shippingAmount) || Number(payload.shippingAmount) < 0)) return '送料金額は0以上の数字で入力してください';
+  if (payload.pdfUrl && !/^https:\/\/[^\s"'<>]+$/i.test(payload.pdfUrl)) return 'PDF URLは https:// から始まるURLを入力してください';
+  return '';
+}
+
+function saveSupplierEstimate() {
+  if (!state.currentCase || state.supplierEstimateSubmitting) return;
+  var payload = {
+    estimateId: $('seEstimateId').value,
+    supplierName: $('seSupplierName').value.trim(),
+    quoteAmount: normalizeAmountInput($('seQuoteAmount').value),
+    taxCategory: $('seTaxCategory').value,
+    shippingCategory: $('seShippingCategory').value,
+    shippingAmount: normalizeAmountInput($('seShippingAmount').value),
+    deliveryDate: $('seDeliveryDate').value,
+    pdfUrl: $('sePdfUrl').value.trim(),
+    note: $('seNote').value.trim()
+  };
+  var error = validateSupplierEstimateForm(payload);
+  $('supplierEstimateFormError').textContent = error;
+  if (error) return;
+  state.supplierEstimateSubmitting = true;
+  $('btnSaveSupplierEstimate').disabled = true;
+  callApi('api_saveSupplierEstimate', [state.currentCase.caseId, payload], '業者見積を保存中にゃん…', function(data) {
+    $('btnSaveSupplierEstimate').disabled = false;
+    $('supplierEstimateFormWrap').classList.remove('show');
+    applySupplierEstimateData(data);
+    showToast('業者見積を保存したにゃん');
+  }, function() {
+    state.supplierEstimateSubmitting = false;
+    $('btnSaveSupplierEstimate').disabled = false;
+  });
+}
+
+function adoptSupplierEstimate(estimateId) {
+  if (!state.currentCase || state.supplierEstimateSubmitting) return;
+  var current = state.supplierEstimates.find(function(item) { return item.adopted; });
+  var message = current
+    ? '現在採用中の見積から変更しますか？'
+    : 'この見積を採用しますか？';
+  if (!window.confirm(message)) return;
+  state.supplierEstimateSubmitting = true;
+  callApi('api_adoptSupplierEstimate', [state.currentCase.caseId, estimateId], '採用見積を切り替え中にゃん…', function(data) {
+    applySupplierEstimateData(data);
+    showToast('採用見積を更新したにゃん');
+  }, function() {
+    state.supplierEstimateSubmitting = false;
   });
 }
 
@@ -1797,6 +2027,12 @@ $('btnRefresh').addEventListener('click', loadCases);
 $('btnGenerate').addEventListener('click', generateEstimate);
 $('dAmountInput').addEventListener('input', updateAmountEditorState);
 $('btnSaveAmount').addEventListener('click', saveExpectedBidAmount);
+$('btnAddSupplierEstimate').addEventListener('click', function() { showSupplierEstimateForm(null); });
+$('btnCancelSupplierEstimate').addEventListener('click', function() {
+  $('supplierEstimateFormWrap').classList.remove('show');
+  resetSupplierEstimateForm();
+});
+$('btnSaveSupplierEstimate').addEventListener('click', saveSupplierEstimate);
 $('btnBackFromDetail').addEventListener('click', function (e) {
   e.preventDefault();
   renderCaseList();
