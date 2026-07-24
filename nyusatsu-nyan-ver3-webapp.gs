@@ -148,7 +148,7 @@ function findCaseRowById_(ss, caseId) {
   const idValues = caseSheet.getRange(2, idCol, lastRow - 1, 1).getValues();
   for (let i = 0; i < idValues.length; i++) {
     if (String(idValues[i][0]).trim() === target) {
-      return { sheet: caseSheet, row: i + 2, headerMap: headerMap };
+      return { sheet: caseSheet, caseSheet: caseSheet, row: i + 2, headerMap: headerMap };
     }
   }
   throw new Error(`案件ID「${caseId}」が01_案件管理に見つからないにゃん。`);
@@ -162,14 +162,61 @@ function buildCaseObject_(caseSheet, headerMap, row) {
     return caseSheet.getRange(row, col).getValue();
   };
 
+  const caseId = String(readCell(CASE_HEADERS.CASE_ID)).trim();
+  const fallbackCostSummary = {
+    caseId: caseId,
+    costStatus: 'missing',
+    statusSource: '',
+    matchedRowCount: 0,
+    confirmedRowCount: 0,
+    reviewRowCount: 0,
+    amountTaxExclusive: null,
+    amountTaxInclusive: null,
+    taxStatus: 'unknown',
+    unknownTaxRowCount: 0,
+    warnings: ['原価情報を取得できませんでした'],
+  };
+  let estimateSummary = {
+    schemaVersion: '1.0',
+    caseId: caseId,
+    summaryStatus: 'incomplete',
+    estimate: {
+      status: 'unavailable',
+      source: CASE_HEADERS.AMOUNT,
+      amountTaxExclusive: null,
+      amountTaxInclusive: null,
+      taxStatus: 'unknown',
+    },
+    cost: fallbackCostSummary,
+    profit: {
+      status: 'unavailable',
+      basis: 'tax_exclusive',
+      amountTaxExclusive: null,
+      amountTaxInclusive: null,
+      marginRate: null,
+      marginPercent: null,
+      marginDisplayDecimals: 1,
+    },
+    warnings: ['見積サマリーを取得できませんでした'],
+  };
+  try {
+    if (typeof calculateEstimateSummary === 'function') {
+      estimateSummary = calculateEstimateSummary(caseId);
+    }
+  } catch (summaryError) {
+    Logger.log('estimateSummary warning: ' + summaryError.stack);
+  }
+
   return {
-    caseId: String(readCell(CASE_HEADERS.CASE_ID)).trim(),
+    caseId: caseId,
     caseName: String(readCell(CASE_HEADERS.CASE_NAME)).trim(),
     org: String(readCell(CASE_HEADERS.ORG)).trim(),
     amount: toDisplayAmount_(readCell(CASE_HEADERS.AMOUNT)),
     deadline: toDisplayDate_(readCell(CASE_HEADERS.DEADLINE)),
     pdfUrl: String(readCell(CASE_HEADERS.PDF_LINK) || '').trim(),
     status: String(readCell(WEBAPP_STATUS_HEADER) || '').trim(),
+    costSummary: estimateSummary.cost,
+    estimateSummary: estimateSummary,
   };
 }
 
@@ -252,6 +299,657 @@ function api_getCaseDetail(caseId) {
   }
 }
 
+/**
+ * 案件IDを指定し、正本から再計算した現在の見積サマリーを返す。
+ * @param {string} caseId
+ */
+function api_getEstimateSummary(caseId) {
+  try {
+    if (!caseId) return apiError_('案件IDが指定されていないにゃん。');
+    return apiOk_({ estimateSummary: calculateEstimateSummary(caseId) });
+  } catch (e) {
+    return apiError_(e.message);
+  }
+}
+
+/**
+ * 案件IDを指定して、01_案件管理の想定入札額(税抜)を更新する。
+ * 見積書Ver2は同じ列を正本として参照する。
+ * @param {string} caseId
+ * @param {number|string} newAmount
+ */
+function api_updateExpectedBidAmount(caseId, newAmount) {
+  let lock = null;
+  let lockAcquired = false;
+  try {
+    if (!caseId) return apiError_('案件IDが指定されていないにゃん。');
+
+    const normalized = String(newAmount == null ? '' : newAmount)
+      .replace(/[￥¥,\s]/g, '');
+    if (!/^\d+$/.test(normalized)) {
+      return apiError_('想定入札額は1円単位の数字で入力してほしいにゃん。');
+    }
+    const amount = Number(normalized);
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      return apiError_('想定入札額は1円以上の有効な金額で入力してほしいにゃん。');
+    }
+
+    lock = LockService.getDocumentLock();
+    lockAcquired = lock.tryLock(10000);
+    if (!lockAcquired) {
+      return apiError_('ほかの更新処理中にゃん。少し待ってから、もう一度保存してほしいにゃん。');
+    }
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    // ロック待機中に行位置や値が変わる可能性があるため、取得後に必ず検索し直す。
+    const found = findCaseRowById_(ss, caseId);
+    const amountCol = found.headerMap[CASE_HEADERS.AMOUNT];
+    if (!amountCol) {
+      return apiError_(`01_案件管理に「${CASE_HEADERS.AMOUNT}」列が見つからないにゃん。`);
+    }
+
+    const updatedAtCol = found.headerMap[WEBAPP_UPDATED_AT_HEADER];
+    const now = new Date();
+    const amountCell = found.sheet.getRange(found.row, amountCol);
+    const previousAmount = amountCell.getValue();
+    const updatedAtCell = updatedAtCol ? found.sheet.getRange(found.row, updatedAtCol) : null;
+    const previousUpdatedAt = updatedAtCell ? updatedAtCell.getValue() : null;
+
+    try {
+      amountCell.setValue(amount);
+      if (updatedAtCell) updatedAtCell.setValue(now);
+    } catch (writeError) {
+      try {
+        amountCell.setValue(previousAmount);
+        if (updatedAtCell) updatedAtCell.setValue(previousUpdatedAt);
+      } catch (rollbackError) {}
+      throw writeError;
+    }
+
+    const refreshedHeaderMap = getHeaderMap_(found.sheet);
+    return apiOk_({
+      case: buildCaseObject_(found.sheet, refreshedHeaderMap, found.row),
+      updatedAt: now.toISOString(),
+    });
+  } catch (e) {
+    return apiError_(e.message);
+  } finally {
+    if (lockAcquired && lock) lock.releaseLock();
+  }
+}
+
+function toDisplayDateTime_(value) {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(value);
+  if (isNaN(date.getTime())) return String(value);
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm');
+}
+
+// ── Phase3.4：業者見積管理 ─────────────────────────────────
+
+const SUPPLIER_ESTIMATE_SHEET = '業者見積DB';
+const SUPPLIER_ESTIMATE_DEFAULT_TAX_RATE = 0.10;
+const SUPPLIER_ESTIMATE_TAX_RATE_PROPERTY = 'SUPPLIER_ESTIMATE_TAX_RATE';
+const SUPPLIER_ESTIMATE_HEADERS = [
+  '見積ID', '案件ID', '仕入先名', '見積金額', '税区分',
+  '送料区分', '送料金額', '納期', 'PDF URL', '備考',
+  '採用フラグ', '採用原価(税抜)', '原価確定状態', '適用税率',
+  '冪等キー', '登録日時', '更新日時'
+];
+// 将来の「仕入先にゃん」分離用。既存シートでは欠落していても読取可能とする。
+const SUPPLIER_ESTIMATE_OPTIONAL_HEADERS = ['品目ID', '仕入先ID'];
+
+function getSupplierEstimateTaxRate_() {
+  const configured = PropertiesService.getScriptProperties()
+    .getProperty(SUPPLIER_ESTIMATE_TAX_RATE_PROPERTY);
+  if (configured === null || configured === '') return SUPPLIER_ESTIMATE_DEFAULT_TAX_RATE;
+  const rate = Number(configured);
+  if (!Number.isFinite(rate) || rate < 0 || rate >= 1) {
+    throw new Error(`${SUPPLIER_ESTIMATE_TAX_RATE_PROPERTY}は0以上1未満の小数で設定してほしいにゃん。`);
+  }
+  return rate;
+}
+
+/**
+ * DocumentLock取得後の書き込み処理からだけ呼ぶ。
+ * 不足シート・不足列を追加するが、既存列の位置や値は変更しない。
+ */
+function ensureSupplierEstimateSheetForWrite_(ss) {
+  let sheet = ss.getSheetByName(SUPPLIER_ESTIMATE_SHEET);
+  if (!sheet) sheet = ss.insertSheet(SUPPLIER_ESTIMATE_SHEET);
+  const existing = sheet.getLastColumn()
+    ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0]
+      .map((value) => String(value || '').trim())
+    : [];
+  SUPPLIER_ESTIMATE_HEADERS.concat(SUPPLIER_ESTIMATE_OPTIONAL_HEADERS).forEach((header) => {
+    const matches = existing.filter((value) => value === header).length;
+    if (matches > 1) throw new Error(`${SUPPLIER_ESTIMATE_SHEET}の「${header}」列が重複しているにゃん。`);
+    if (!matches) {
+      sheet.getRange(1, sheet.getLastColumn() + 1).setValue(header);
+      existing.push(header);
+    }
+  });
+  const headerMap = supplierEstimateHeaderMap_(sheet);
+  SUPPLIER_ESTIMATE_HEADERS.concat(SUPPLIER_ESTIMATE_OPTIONAL_HEADERS).forEach((header) => {
+    sheet.getRange(1, headerMap[header]).setFontWeight('bold').setBackground('#f0f0f0');
+  });
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+/** 手動初期設定用。通常の一覧取得からは呼ばない。 */
+function setupSupplierEstimateSheet() {
+  const lock = LockService.getDocumentLock();
+  let acquired = false;
+  try {
+    acquired = lock.tryLock(10000);
+    if (!acquired) throw new Error('ほかの更新処理中にゃん。少し待ってから、もう一度初期設定してほしいにゃん。');
+    const sheet = ensureSupplierEstimateSheetForWrite_(SpreadsheetApp.getActiveSpreadsheet());
+    return {
+      success: true,
+      sheetName: sheet.getName(),
+      headers: SUPPLIER_ESTIMATE_HEADERS.concat(SUPPLIER_ESTIMATE_OPTIONAL_HEADERS),
+    };
+  } finally {
+    if (acquired) lock.releaseLock();
+  }
+}
+
+function supplierEstimateHeaderMap_(sheet) {
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
+  const map = {};
+  headers.forEach((header, index) => {
+    const name = String(header || '').trim();
+    if (name) map[name] = index + 1;
+  });
+  SUPPLIER_ESTIMATE_HEADERS.forEach((header) => {
+    if (!map[header]) throw new Error(`${SUPPLIER_ESTIMATE_SHEET}に「${header}」列が見つからないにゃん。`);
+  });
+  return map;
+}
+
+function parseSupplierEstimateAmount_(value, required, label) {
+  if (value === '' || value === null || value === undefined) {
+    if (required) throw new Error(`${label}を入力してほしいにゃん。`);
+    return null;
+  }
+  const normalized = String(value).replace(/[￥¥,\s]/g, '');
+  if (!/^\d+(?:\.\d+)?$/.test(normalized)) throw new Error(`${label}は0以上の数字で入力してほしいにゃん。`);
+  const amount = Number(normalized);
+  if (!Number.isFinite(amount) || amount < 0) throw new Error(`${label}は0以上の数字で入力してほしいにゃん。`);
+  return amount;
+}
+
+function validateSupplierEstimateUrl_(value) {
+  const url = String(value || '').trim();
+  if (!url) return '';
+  if (!isSafeSupplierEstimateUrl_(url)) throw new Error('見積書PDF URLは https:// から始まるURLを入力してほしいにゃん。');
+  return url;
+}
+
+function isSafeSupplierEstimateUrl_(value) {
+  return /^https:\/\/[^\s"'<>]+$/i.test(String(value || '').trim());
+}
+
+function normalizeSupplierEstimate_(payload) {
+  const input = payload || {};
+  const supplierName = String(input.supplierName || '').trim();
+  if (!supplierName) throw new Error('仕入先名を入力してほしいにゃん。');
+  const taxCategory = String(input.taxCategory || '').trim();
+  if (['税込', '税抜'].indexOf(taxCategory) === -1) throw new Error('税区分を選んでほしいにゃん。');
+  const shippingCategory = String(input.shippingCategory || '').trim();
+  if (['送料込み', '送料別', '不明'].indexOf(shippingCategory) === -1) throw new Error('送料区分を選んでほしいにゃん。');
+  return {
+    estimateId: String(input.estimateId || '').trim(),
+    itemId: String(input.itemId || '').trim(),
+    supplierId: String(input.supplierId || '').trim(),
+    supplierName: supplierName,
+    quoteAmount: parseSupplierEstimateAmount_(input.quoteAmount, true, '見積金額'),
+    taxCategory: taxCategory,
+    shippingCategory: shippingCategory,
+    shippingAmount: parseSupplierEstimateAmount_(input.shippingAmount, false, '送料金額'),
+    deliveryDate: String(input.deliveryDate || '').trim(),
+    pdfUrl: validateSupplierEstimateUrl_(input.pdfUrl),
+    note: String(input.note || '').trim(),
+    idempotencyKey: String(input.idempotencyKey || input.requestId || '').trim(),
+  };
+}
+
+function calculateSupplierEstimateCost_(estimate, taxRate) {
+  const rate = Number(taxRate);
+  if (!Number.isFinite(rate) || rate < 0 || rate >= 1) {
+    return { confirmed: false, amountTaxExclusive: null, warning: '消費税率の設定が不正です' };
+  }
+  if (!estimate || !Number.isFinite(estimate.quoteAmount) || estimate.quoteAmount < 0) {
+    return { confirmed: false, amountTaxExclusive: null, warning: '見積金額が不正です' };
+  }
+  if (estimate.shippingCategory === '不明') {
+    return { confirmed: false, amountTaxExclusive: null, warning: '送料不明のため原価未確定' };
+  }
+  if (estimate.shippingCategory === '送料別' &&
+      (!Number.isFinite(estimate.shippingAmount) || estimate.shippingAmount < 0)) {
+    return { confirmed: false, amountTaxExclusive: null, warning: '送料未入力のため原価未確定' };
+  }
+  const total = estimate.quoteAmount +
+    (estimate.shippingCategory === '送料別' ? estimate.shippingAmount : 0);
+  // 税込＋送料別では、見積金額と送料金額の合計全体を税込額として税抜換算する。
+  const taxExclusive = estimate.taxCategory === '税込'
+    ? Math.round(total / (1 + rate))
+    : total;
+  return { confirmed: true, amountTaxExclusive: taxExclusive, warning: '' };
+}
+
+function supplierEstimateRowObject_(row, map, rowNumber) {
+  const read = (header) => row[map[header] - 1];
+  const readOptional = (header) => map[header] ? row[map[header] - 1] : '';
+  const shippingRaw = read('送料金額');
+  const costRaw = read('採用原価(税抜)');
+  const pdfUrlRaw = String(read('PDF URL') || '').trim();
+  return {
+    rowNumber: rowNumber,
+    estimateId: String(read('見積ID') || '').trim(),
+    caseId: String(read('案件ID') || '').trim(),
+    itemId: String(readOptional('品目ID') || '').trim(),
+    supplierId: String(readOptional('仕入先ID') || '').trim(),
+    supplierName: String(read('仕入先名') || '').trim(),
+    quoteAmount: Number(read('見積金額')),
+    taxCategory: String(read('税区分') || '').trim(),
+    shippingCategory: String(read('送料区分') || '').trim(),
+    shippingAmount: shippingRaw === '' ? null : Number(shippingRaw),
+    deliveryDate: toDisplayDate_(read('納期')),
+    pdfUrl: isSafeSupplierEstimateUrl_(pdfUrlRaw) ? pdfUrlRaw : '',
+    pdfUrlNeedsReview: Boolean(pdfUrlRaw) && !isSafeSupplierEstimateUrl_(pdfUrlRaw),
+    note: String(read('備考') || '').trim(),
+    adopted: read('採用フラグ') === true || String(read('採用フラグ')).toUpperCase() === 'TRUE',
+    adoptedCostTaxExclusive: costRaw === '' ? null : Number(costRaw),
+    costStatus: String(read('原価確定状態') || '').trim(),
+    taxRate: Number(read('適用税率')),
+    idempotencyKey: String(read('冪等キー') || '').trim(),
+    createdAt: toDisplayDateTime_(read('登録日時')),
+    updatedAt: toDisplayDateTime_(read('更新日時')),
+  };
+}
+
+function getSupplierEstimateRows_(sheet, caseId) {
+  if (sheet.getLastRow() < 2) return [];
+  const map = supplierEstimateHeaderMap_(sheet);
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues()
+    .map((row, index) => supplierEstimateRowObject_(row, map, index + 2))
+    .filter((estimate) => estimate.caseId === String(caseId || '').trim())
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+function findSupplierEstimate_(sheet, estimateId) {
+  const target = String(estimateId || '').trim();
+  if (sheet.getLastRow() < 2) return null;
+  const map = supplierEstimateHeaderMap_(sheet);
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  for (let i = 0; i < values.length; i++) {
+    const estimate = supplierEstimateRowObject_(values[i], map, i + 2);
+    if (estimate.estimateId === target) return estimate;
+  }
+  return null;
+}
+
+function findSupplierEstimateByIdempotencyKey_(sheet, caseId, idempotencyKey) {
+  const key = String(idempotencyKey || '').trim();
+  if (!key || sheet.getLastRow() < 2) return null;
+  return getSupplierEstimateRows_(sheet, caseId)
+    .find((estimate) => estimate.idempotencyKey === key) || null;
+}
+
+function buildSupplierEstimateSummary_(caseId, expectedBidValue, estimates) {
+  let expected = null;
+  const adopted = (estimates || []).filter((estimate) => estimate.adopted);
+  const warnings = [];
+  try {
+    expected = parseSupplierEstimateAmount_(expectedBidValue, false, '想定入札額');
+  } catch (e) {
+    warnings.push('想定入札額のデータが不正です');
+  }
+  if (expected === null) warnings.push('想定入札額が未入力です');
+  if (expected === 0) warnings.push('想定入札額が0円のため利益率を計算できません');
+  if (!adopted.length) warnings.push('採用見積がありません');
+  if (adopted.length > 1) warnings.push('採用見積が複数あるため要確認です');
+  const selected = adopted.length === 1 ? adopted[0] : null;
+  if (selected && selected.costStatus !== '確定') {
+    warnings.push(selected.costStatus || '原価未確定');
+  }
+  const ready = expected !== null && expected > 0 && selected &&
+    selected.costStatus === '確定' &&
+    Number.isFinite(selected.adoptedCostTaxExclusive);
+  const cost = ready ? selected.adoptedCostTaxExclusive : null;
+  const profit = ready ? expected - cost : null;
+  return {
+    status: ready ? 'calculated' : 'incomplete',
+    expectedBidTaxExclusive: expected,
+    adoptedCostTaxExclusive: cost,
+    expectedProfit: profit,
+    expectedProfitRate: ready ? Math.round((profit / expected) * 1000) / 10 : null,
+    loss: ready && profit < 0,
+    warnings: warnings,
+  };
+}
+
+function buildSupplierEstimateResponse_(ss, caseId) {
+  const found = findCaseRowById_(ss, caseId);
+  const sheet = ss.getSheetByName(SUPPLIER_ESTIMATE_SHEET);
+  const estimates = sheet ? getSupplierEstimateRows_(sheet, caseId) : [];
+  const expected = found.sheet.getRange(found.row, found.headerMap[CASE_HEADERS.AMOUNT]).getValue();
+  return {
+    estimates: estimates,
+    summary: buildSupplierEstimateSummary_(caseId, expected, estimates),
+    adoptionResult: buildSupplierEstimateAdoptionResult_(caseId, '', estimates),
+  };
+}
+
+/**
+ * 入札にゃんOSへ返す採用結果DTO。
+ * 01_案件管理やWeb画面には依存せず、将来は品目ID指定でも取得できる。
+ */
+function buildSupplierEstimateAdoptionResult_(caseId, itemId, estimates) {
+  const targetCaseId = String(caseId || '').trim();
+  const targetItemId = String(itemId || '').trim();
+  const candidates = (estimates || []).filter((estimate) =>
+    estimate.caseId === targetCaseId &&
+    (!targetItemId || estimate.itemId === targetItemId) &&
+    estimate.adopted
+  );
+  const adopted = candidates.length === 1 ? candidates[0] : null;
+  return {
+    caseId: targetCaseId,
+    itemId: targetItemId || (adopted ? adopted.itemId : ''),
+    adoptedEstimateId: adopted ? adopted.estimateId : '',
+    adoptedSupplierId: adopted ? adopted.supplierId : '',
+    adoptedSupplierName: adopted ? adopted.supplierName : '',
+    adoptedCostTaxExclusive: adopted ? adopted.adoptedCostTaxExclusive : null,
+    costStatus: adopted ? adopted.costStatus : '',
+    deliveryDate: adopted ? adopted.deliveryDate : '',
+    status: adopted ? 'adopted' : (candidates.length > 1 ? 'needs_review' : 'missing'),
+  };
+}
+
+function getAdoptedSupplierEstimateResult_(ss, caseId, itemId) {
+  const sheet = ss.getSheetByName(SUPPLIER_ESTIMATE_SHEET);
+  const estimates = sheet ? getSupplierEstimateRows_(sheet, caseId) : [];
+  return buildSupplierEstimateAdoptionResult_(caseId, itemId, estimates);
+}
+
+function api_listSupplierEstimates(caseId) {
+  try {
+    if (!caseId) return apiError_('案件IDが指定されていないにゃん。');
+    return apiOk_(buildSupplierEstimateResponse_(SpreadsheetApp.getActiveSpreadsheet(), caseId));
+  } catch (e) {
+    if (String(e.message || '').indexOf(`${SUPPLIER_ESTIMATE_SHEET}に「`) >= 0) {
+      return apiError_(`業者見積DBの初期設定が必要にゃん。setupSupplierEstimateSheetを実行してほしいにゃん。（${e.message}）`);
+    }
+    return apiError_(e.message);
+  }
+}
+
+function api_saveSupplierEstimate(caseId, payload) {
+  let lock = null;
+  let acquired = false;
+  try {
+    if (!caseId) return apiError_('案件IDが指定されていないにゃん。');
+    const normalized = normalizeSupplierEstimate_(payload);
+    lock = LockService.getDocumentLock();
+    acquired = lock.tryLock(10000);
+    if (!acquired) return apiError_('ほかの更新処理中にゃん。少し待ってから、もう一度保存してほしいにゃん。');
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    findCaseRowById_(ss, caseId);
+    const saved = saveSupplierEstimate_(ss, caseId, normalized);
+    const response = buildSupplierEstimateResponse_(ss, caseId);
+    response.savedEstimateId = saved.estimateId;
+    response.duplicate = saved.duplicate;
+    return apiOk_(response);
+  } catch (e) {
+    return apiError_(e.message);
+  } finally {
+    if (acquired && lock) lock.releaseLock();
+  }
+}
+
+/**
+ * Phase3.5 OCRからも再利用する業者見積保存サービス。
+ * 呼出元がDocumentLockを取得済みであること。DOMや画面状態には依存しない。
+ */
+function saveSupplierEstimate_(ss, caseId, normalized) {
+  const targetCaseId = String(caseId || '').trim();
+  const sheet = ensureSupplierEstimateSheetForWrite_(ss);
+  const map = supplierEstimateHeaderMap_(sheet);
+  const duplicate = !normalized.estimateId && normalized.idempotencyKey
+    ? findSupplierEstimateByIdempotencyKey_(sheet, targetCaseId, normalized.idempotencyKey)
+    : null;
+  if (duplicate) return { estimateId: duplicate.estimateId, duplicate: true };
+
+  const existing = normalized.estimateId ? findSupplierEstimate_(sheet, normalized.estimateId) : null;
+  if (normalized.estimateId && (!existing || existing.caseId !== targetCaseId)) {
+    throw new Error('編集対象の業者見積が見つからないにゃん。');
+  }
+  const now = new Date();
+  const rowNumber = existing ? existing.rowNumber : sheet.getLastRow() + 1;
+  const record = buildSupplierEstimateSaveRecord_(sheet, map, targetCaseId, normalized, existing, now);
+  writeSupplierEstimateFields_(sheet, map, rowNumber, record);
+  SpreadsheetApp.flush();
+  return { estimateId: record['見積ID'], duplicate: false };
+}
+
+function buildSupplierEstimateSaveRecord_(sheet, map, caseId, normalized, existing, now) {
+  const record = {
+    '見積ID': existing ? existing.estimateId : Utilities.getUuid(),
+    '案件ID': caseId,
+    '品目ID': normalized.itemId || (existing ? existing.itemId : ''),
+    '仕入先ID': normalized.supplierId || (existing ? existing.supplierId : ''),
+    '仕入先名': normalized.supplierName,
+    '見積金額': normalized.quoteAmount,
+    '税区分': normalized.taxCategory,
+    '送料区分': normalized.shippingCategory,
+    '送料金額': normalized.shippingAmount === null ? '' : normalized.shippingAmount,
+    '納期': normalized.deliveryDate,
+    'PDF URL': normalized.pdfUrl,
+    '備考': normalized.note,
+    '採用フラグ': existing ? existing.adopted : false,
+    '採用原価(税抜)': '',
+    '原価確定状態': '',
+    '適用税率': '',
+    '冪等キー': normalized.idempotencyKey || (existing ? existing.idempotencyKey : ''),
+    '登録日時': existing ? sheet.getRange(existing.rowNumber, map['登録日時']).getValue() : now,
+    '更新日時': now,
+  };
+  if (record['採用フラグ']) {
+    const taxRate = getSupplierEstimateTaxRate_();
+    const cost = calculateSupplierEstimateCost_(normalized, taxRate);
+    record['採用原価(税抜)'] = cost.confirmed ? cost.amountTaxExclusive : '';
+    record['原価確定状態'] = cost.confirmed ? '確定' : cost.warning;
+    record['適用税率'] = taxRate;
+  }
+  return record;
+}
+
+/** 管理対象列だけを書き、未知列・将来列は一切変更しない。 */
+function writeSupplierEstimateFields_(sheet, map, rowNumber, record) {
+  Object.keys(record).forEach((header) => {
+    if (!map[header]) throw new Error(`${SUPPLIER_ESTIMATE_SHEET}に「${header}」列が見つからないにゃん。`);
+    sheet.getRange(rowNumber, map[header]).setValue(record[header]);
+  });
+}
+
+function api_adoptSupplierEstimate(caseId, estimateId) {
+  let lock = null;
+  let acquired = false;
+  try {
+    if (!caseId || !estimateId) return apiError_('案件IDまたは見積IDが指定されていないにゃん。');
+    lock = LockService.getDocumentLock();
+    acquired = lock.tryLock(10000);
+    if (!acquired) return apiError_('ほかの更新処理中にゃん。少し待ってから、もう一度採用してほしいにゃん。');
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    findCaseRowById_(ss, caseId);
+    const sheet = ensureSupplierEstimateSheetForWrite_(ss);
+    const map = supplierEstimateHeaderMap_(sheet);
+    const target = findSupplierEstimate_(sheet, estimateId);
+    const targetCaseId = String(caseId).trim();
+    if (!target || target.caseId !== targetCaseId) return apiError_('採用対象の業者見積が見つからないにゃん。');
+    const estimates = getSupplierEstimateRows_(sheet, caseId);
+    const taxRate = getSupplierEstimateTaxRate_();
+    const plan = buildSupplierEstimateAdoptionPlan_(estimates, estimateId, taxRate, new Date());
+    const snapshots = snapshotSupplierEstimateAdoption_(sheet, map, plan);
+    try {
+      applySupplierEstimateAdoptionPlan_(sheet, map, plan);
+      SpreadsheetApp.flush();
+      verifySupplierEstimateAdoption_(sheet, targetCaseId, estimateId);
+    } catch (writeError) {
+      rollbackSupplierEstimateAdoption_(sheet, map, snapshots);
+      throw writeError;
+    }
+    return apiOk_(buildSupplierEstimateResponse_(ss, caseId));
+  } catch (e) {
+    return apiError_(e.message);
+  } finally {
+    if (acquired && lock) lock.releaseLock();
+  }
+}
+
+const SUPPLIER_ESTIMATE_ADOPTION_COLUMNS = [
+  '採用フラグ', '採用原価(税抜)', '原価確定状態', '適用税率', '更新日時'
+];
+
+function buildSupplierEstimateAdoptionPlan_(estimates, targetEstimateId, taxRate, now) {
+  return estimates.map((estimate) => {
+    const adopted = estimate.estimateId === String(targetEstimateId);
+    const cost = adopted ? calculateSupplierEstimateCost_(estimate, taxRate) : null;
+    return {
+      rowNumber: estimate.rowNumber,
+      values: {
+        '採用フラグ': adopted,
+        '採用原価(税抜)': adopted && cost.confirmed ? cost.amountTaxExclusive : '',
+        '原価確定状態': adopted ? (cost.confirmed ? '確定' : cost.warning) : '',
+        '適用税率': adopted ? taxRate : '',
+        '更新日時': now,
+      },
+    };
+  });
+}
+
+function snapshotSupplierEstimateAdoption_(sheet, map, plan) {
+  return plan.map((item) => ({
+    rowNumber: item.rowNumber,
+    values: SUPPLIER_ESTIMATE_ADOPTION_COLUMNS.map(
+      (header) => sheet.getRange(item.rowNumber, map[header]).getValue()
+    ),
+  }));
+}
+
+function applySupplierEstimateAdoptionPlan_(sheet, map, plan) {
+  plan.forEach((item) => writeSupplierEstimateFields_(sheet, map, item.rowNumber, item.values));
+}
+
+function rollbackSupplierEstimateAdoption_(sheet, map, snapshots) {
+  snapshots.forEach((snapshot) => {
+    SUPPLIER_ESTIMATE_ADOPTION_COLUMNS.forEach((header, index) => {
+      sheet.getRange(snapshot.rowNumber, map[header]).setValue(snapshot.values[index]);
+    });
+  });
+  SpreadsheetApp.flush();
+}
+
+function verifySupplierEstimateAdoption_(sheet, caseId, estimateId) {
+  const adopted = getSupplierEstimateRows_(sheet, caseId).filter((estimate) => estimate.adopted);
+  if (adopted.length !== 1 || adopted[0].estimateId !== String(estimateId)) {
+    throw new Error('採用見積を1件に確定できなかったにゃん。');
+  }
+}
+
+function testSupplierEstimatePureFunctions() {
+  let tested = 0;
+  const assert = (condition, message) => {
+    tested++;
+    if (!condition) throw new Error(`業者見積テスト失敗: ${message}`);
+  };
+  const base = {
+    quoteAmount: 110000, taxCategory: '税込',
+    shippingCategory: '送料込み', shippingAmount: null,
+  };
+  const included = calculateSupplierEstimateCost_(base, 0.10);
+  assert(included.confirmed && included.amountTaxExclusive === 100000, '税込・送料込み計算');
+  const separate = calculateSupplierEstimateCost_({
+    quoteAmount: 100000, taxCategory: '税抜',
+    shippingCategory: '送料別', shippingAmount: 5000,
+  }, 0.10);
+  assert(separate.confirmed && separate.amountTaxExclusive === 105000, '送料別計算');
+  const missing = calculateSupplierEstimateCost_({
+    quoteAmount: 100000, taxCategory: '税抜',
+    shippingCategory: '送料別', shippingAmount: null,
+  }, 0.10);
+  assert(!missing.confirmed && missing.warning.indexOf('送料未入力') >= 0, '送料未入力は未確定');
+  const unknown = calculateSupplierEstimateCost_({
+    quoteAmount: 100000, taxCategory: '税抜',
+    shippingCategory: '不明', shippingAmount: null,
+  }, 0.10);
+  assert(!unknown.confirmed, '送料不明は未確定');
+  const summary = buildSupplierEstimateSummary_('CASE-1', 235000, [{
+    adopted: true, costStatus: '確定', adoptedCostTaxExclusive: 184500,
+  }]);
+  assert(summary.expectedProfit === 50500, '想定利益');
+  assert(summary.expectedProfitRate === 21.5, '想定利益率');
+  assert(buildSupplierEstimateSummary_('CASE-1', '', []).status === 'incomplete', '想定入札額・採用見積なし');
+  assert(buildSupplierEstimateSummary_('CASE-1', 100000, [
+    { adopted: true, costStatus: '確定', adoptedCostTaxExclusive: 50000 },
+    { adopted: true, costStatus: '確定', adoptedCostTaxExclusive: 60000 },
+  ]).status === 'incomplete', '複数採用は未確定');
+  assert(buildSupplierEstimateSummary_('CASE-1', 100000, [{
+    adopted: true, costStatus: '確定', adoptedCostTaxExclusive: 120000,
+  }]).loss === true, '赤字警告');
+  let invalidUrlRejected = false;
+  try {
+    normalizeSupplierEstimate_({
+      supplierName: 'A社', quoteAmount: 1, taxCategory: '税抜',
+      shippingCategory: '送料込み', pdfUrl: 'javascript:alert(1)',
+    });
+  } catch (e) {
+    invalidUrlRejected = true;
+  }
+  assert(invalidUrlRejected, '不正URL拒否');
+  assert(isSafeSupplierEstimateUrl_('https://example.com/quote.pdf'), 'HTTPS URL許可');
+  ['javascript:alert(1)', 'data:text/html,test', 'http://example.com/a.pdf'].forEach((url) => {
+    assert(!isSafeSupplierEstimateUrl_(url), `${url.split(':')[0]} URL拒否`);
+  });
+  const adoptionPlan = buildSupplierEstimateAdoptionPlan_([
+    { rowNumber: 2, estimateId: 'OLD', quoteAmount: 80000, taxCategory: '税抜', shippingCategory: '送料込み', shippingAmount: null },
+    { rowNumber: 3, estimateId: 'NEW', quoteAmount: 110000, taxCategory: '税込', shippingCategory: '送料込み', shippingAmount: null },
+  ], 'NEW', 0.10, new Date(0));
+  assert(adoptionPlan[0].values['適用税率'] === '', '採用解除時の税率クリア');
+  assert(adoptionPlan[0].values['採用原価(税抜)'] === '', '採用解除時の原価クリア');
+  assert(adoptionPlan[1].values['適用税率'] === 0.10, '採用時の税率保存');
+  assert(adoptionPlan[1].values['採用原価(税抜)'] === 100000, '採用時の原価保存');
+  const cellValues = {1: '既存管理値', 2: ''};
+  const mockSheet = {
+    getRange: function(row, column) {
+      return { setValue: function(value) { cellValues[column] = value; } };
+    }
+  };
+  writeSupplierEstimateFields_(mockSheet, {'仕入先名': 2}, 2, {'仕入先名': '更新後'});
+  assert(cellValues[1] === '既存管理値', '未知列を維持');
+  assert(cellValues[2] === '更新後', '管理対象列だけ更新');
+  const requestNormalized = normalizeSupplierEstimate_({
+    itemId: 'ITEM-1', supplierId: 'SUP-1',
+    supplierName: 'A社', quoteAmount: 1, taxCategory: '税抜',
+    shippingCategory: '送料込み', requestId: 'OCR-REQUEST-1',
+  });
+  assert(requestNormalized.idempotencyKey === 'OCR-REQUEST-1', 'requestIdを冪等キーとして正規化');
+  assert(requestNormalized.itemId === 'ITEM-1', '品目IDを正規化');
+  assert(requestNormalized.supplierId === 'SUP-1', '仕入先IDを正規化');
+  const adoptionResult = buildSupplierEstimateAdoptionResult_('CASE-1', 'ITEM-1', [{
+    caseId: 'CASE-1', itemId: 'ITEM-1', estimateId: 'EST-1',
+    supplierId: 'SUP-1', supplierName: 'A社', adopted: true,
+    adoptedCostTaxExclusive: 100000, costStatus: '確定', deliveryDate: '2026/08/01',
+  }]);
+  assert(adoptionResult.adoptedEstimateId === 'EST-1', '採用見積ID DTO');
+  assert(adoptionResult.adoptedSupplierId === 'SUP-1', '採用仕入先ID DTO');
+  assert(adoptionResult.adoptedCostTaxExclusive === 100000, '採用原価 DTO');
+  return { success: true, tested: tested };
+}
+
 // ── API：案件状態更新 ────────────────────────────────────────
 
 /**
@@ -320,14 +1018,22 @@ function api_generateEstimate(caseId) {
     if (!caseId) return apiError_('案件IDが指定されていないにゃん。');
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const found = findCaseRowById_(ss, caseId);
-
-    // 既存Ver3ロジックを再利用（このファイルでは再実装しない）
-    const result = generateEstimateForRow_(ss, found.sheet, found.row);
+    const payload = buildEstimatePayloadV2FromRow_(ss, found.sheet, found.row, 'web-app');
+    const result = generateEstimateFromPayload_(payload, {
+      ss: ss,
+      caseSheet: found.sheet,
+      row: found.row,
+    });
+    const refreshedHeaderMap = getHeaderMap_(found.sheet);
+    const caseData = buildCaseObject_(found.sheet, refreshedHeaderMap, found.row);
 
     return apiOk_({
       caseId: result.caseId,
       org: result.org,
-      pdfUrl: result.pdfUrl,
+      pdfUrl: result.primaryPdfUrl,
+      primaryPdfUrl: result.primaryPdfUrl,
+      documents: result.documents,
+      caseData: caseData,
     });
   } catch (e) {
     return apiError_(e.message);

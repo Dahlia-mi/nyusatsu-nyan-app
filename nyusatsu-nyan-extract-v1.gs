@@ -29,8 +29,41 @@ const OCR_CORRECTION_LOG_HEADERS = [
   'extractedValue', 'correctedValue', 'learningType', 'agencyType',
   'agencyName', 'sourceLabel', 'sourceText', 'reason', 'createdAt',
 ];
+const LEARNING_CANDIDATE_SHEET_NAME = '学習候補';
+const LEARNING_CANDIDATE_HEADERS = [
+  'candidateKey', 'candidateId', 'firstLogId', 'term', 'correctedTerm',
+  'semanticKey', 'learningType', 'agencyType', 'agencyName', 'status',
+  'createdAt', 'updatedAt', 'lastCaseId', 'lastLogId',
+];
+const LEARNING_DECISION_SHEET_NAME = '学習判断履歴';
+const LEARNING_DECISION_HEADERS = [
+  'decisionId', 'candidateId', 'logId', 'candidateKey', 'caseId',
+  'fieldKey', 'decision', 'term', 'correctedTerm', 'learningType',
+  'agencyType', 'agencyName', 'createdAt',
+];
+const LEARNING_DECISIONS = ['register', 'once', 'ignore'];
 const LEARNING_TARGET_FIELD_KEYS = [
   'delivery.place', 'delivery.date', 'submission.deadline', 'submission.method',
+];
+const SEMANTIC_LEARNING_CANDIDATE_SHEET_NAME = 'にゃん語辞典候補';
+const SEMANTIC_LEARNING_CANDIDATE_HEADERS = [
+  'candidateId', 'caseId', 'term', 'normalizedTerm', 'suggestedSemanticKey',
+  'selectedSemanticKey', 'documentType', 'sourceLabel', 'relation', 'sourceText',
+  'pageNumber', 'agencyType', 'agencyName', 'scope', 'status', 'createdAt',
+  'updatedAt', 'decidedAt',
+];
+const SEMANTIC_DICTIONARY_SHEET_NAME = 'Semantic Dictionary';
+const SEMANTIC_DICTIONARY_HEADERS = [
+  'entryId', 'term', 'normalizedTerm', 'semanticKey', 'scope', 'agencyType',
+  'agencyName', 'status', 'sourceCandidateId', 'createdAt', 'updatedAt',
+];
+const SEMANTIC_CANDIDATE_DECISIONS = ['teach', 'defer', 'not_heading', 'unmapped'];
+const SEMANTIC_KEY_REGISTRY = [
+  { semanticKey: 'delivery.place', displayName: '納品場所', valueType: 'location', category: 'delivery', status: 'active' },
+  { semanticKey: 'delivery.date', displayName: '納期', valueType: 'date', category: 'delivery', status: 'active' },
+  { semanticKey: 'submission.deadline', displayName: '提出期限', valueType: 'datetime', category: 'submission', status: 'active' },
+  { semanticKey: 'submission.method', displayName: '提出方法', valueType: 'method', category: 'submission', status: 'active' },
+  { semanticKey: 'question.deadline', displayName: '質問受付期限', valueType: 'datetime', category: 'question', status: 'active' },
 ];
 const EXTRACT_SESSION_HEADERS = [
   'セッションID', '作成日時', 'ステータス', '元ファイル名',
@@ -2305,6 +2338,534 @@ function saveOcrCorrectionLogs_(logs) {
   }
 }
 
+function semanticFieldLabel_(fieldKey) {
+  return {
+    'delivery.place': '納品場所',
+    'delivery.date': '納期',
+    'submission.deadline': '提出期限',
+    'submission.method': '提出方法',
+  }[fieldKey] || '';
+}
+
+function buildLearningReviewCandidateFromLog_(log) {
+  log = log || {};
+  const logId = String(log.logId || '').trim();
+  const caseId = String(log.caseId || '').trim();
+  const fieldKey = String(log.fieldKey || '').trim();
+  const learningType = String(log.learningType || '').trim();
+  if (!logId || !caseId || !LEARNING_TARGET_FIELD_KEYS.includes(fieldKey)) return null;
+
+  let term = '';
+  let correctedTerm = '';
+  if (learningType === 'ocr_correction') {
+    term = normalizeLearningComparisonText_(log.extractedValue);
+    correctedTerm = normalizeLearningComparisonText_(log.correctedValue);
+    if (!term || !correctedTerm || learningEditDistance_(term, correctedTerm) !== 1) return null;
+  } else if (learningType === 'synonym') {
+    const sourceLabel = normalizeLearningComparisonText_(log.sourceLabel);
+    if (!sourceLabel || !/見出し|ラベル|項目名|同義|類義/.test(String(log.reason || ''))) return null;
+    term = semanticFieldLabel_(fieldKey);
+    correctedTerm = sourceLabel;
+  } else {
+    return null;
+  }
+
+  const agencyType = normalizeLearningComparisonText_(log.agencyType) || '未判定';
+  const candidateKey = JSON.stringify([fieldKey, learningType, agencyType, term, correctedTerm]
+    .map(normalizeLearningComparisonText_));
+  return {
+    candidateId: logId,
+    logId: logId,
+    caseId: caseId,
+    fieldKey: fieldKey,
+    semanticKey: fieldKey,
+    learningType: learningType,
+    term: term,
+    correctedTerm: correctedTerm,
+    agencyType: agencyType,
+    agencyName: String(log.agencyName || ''),
+    candidateKey: candidateKey,
+  };
+}
+
+function buildLearningReviewCandidates_(logs) {
+  return (Array.isArray(logs) ? logs : [])
+    .map(buildLearningReviewCandidateFromLog_)
+    .filter(Boolean)
+    .map(function(candidate) {
+      return {
+        candidateId: candidate.candidateId,
+        logId: candidate.logId,
+        caseId: candidate.caseId,
+        fieldKey: candidate.fieldKey,
+        semanticKey: candidate.semanticKey,
+        learningType: candidate.learningType,
+        term: candidate.term,
+        correctedTerm: candidate.correctedTerm,
+        agencyType: candidate.agencyType,
+      };
+    });
+}
+
+function getValidatedLearningHeaderMap_(sheet, requiredHeaders, sheetName) {
+  if (!sheet || sheet.getLastColumn() < 1) throw new Error(sheetName + 'のヘッダーがありません');
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]
+    .map(function(value) { return String(value || '').trim(); });
+  const map = {};
+  requiredHeaders.forEach(function(header) {
+    const positions = [];
+    headers.forEach(function(value, index) { if (value === header) positions.push(index); });
+    if (positions.length !== 1) throw new Error(sheetName + 'のヘッダーが競合しています: ' + header);
+    map[header] = positions[0];
+  });
+  return map;
+}
+
+function getOrCreateLearningSheet_(sheetName, headers) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) sheet = ss.insertSheet(sheetName);
+  const currentHeaders = sheet.getLastColumn() > 0
+    ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]
+      .map(function(value) { return String(value || '').trim(); })
+    : [];
+  headers.forEach(function(header) {
+    if (!currentHeaders.includes(header)) {
+      sheet.getRange(1, sheet.getLastColumn() + 1).setValue(header);
+      currentHeaders.push(header);
+    }
+  });
+  getValidatedLearningHeaderMap_(sheet, headers, sheetName);
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function learningRowToObject_(headers, row) {
+  const out = {};
+  headers.forEach(function(header, index) { out[String(header || '').trim()] = row[index]; });
+  return out;
+}
+
+function findOcrCorrectionLogForDecision_(caseId, logId) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(OCR_CORRECTION_LOG_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) throw new Error('対象のOCR修正ログが見つかりません');
+  const headerMap = getValidatedLearningHeaderMap_(sheet, OCR_CORRECTION_LOG_HEADERS, OCR_CORRECTION_LOG_SHEET_NAME);
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][headerMap.logId] || '').trim() === logId &&
+        String(rows[i][headerMap.caseId] || '').trim() === caseId) {
+      return learningRowToObject_(headers, rows[i]);
+    }
+  }
+  throw new Error('案件と一致するOCR修正ログが見つかりません');
+}
+
+function findLearningDecisionByLogId_(sheet, logId) {
+  if (!sheet || sheet.getLastRow() < 2) return null;
+  const headerMap = getValidatedLearningHeaderMap_(sheet, LEARNING_DECISION_HEADERS, LEARNING_DECISION_SHEET_NAME);
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][headerMap.logId] || '').trim() === logId) {
+      return learningRowToObject_(headers, rows[i]);
+    }
+  }
+  return null;
+}
+
+function appendLearningObject_(sheet, headers, value) {
+  const headerMap = getValidatedLearningHeaderMap_(sheet, headers, sheet.getName());
+  const row = new Array(sheet.getLastColumn()).fill('');
+  headers.forEach(function(header) {
+    row[headerMap[header]] = escapeOcrCorrectionLogCell_(value[header]);
+  });
+  const range = sheet.getRange(sheet.getLastRow() + 1, 1, 1, sheet.getLastColumn());
+  range.setNumberFormat('@');
+  range.setValues([row]);
+}
+
+function upsertLearningCandidate_(candidate) {
+  const sheet = getOrCreateLearningSheet_(LEARNING_CANDIDATE_SHEET_NAME, LEARNING_CANDIDATE_HEADERS);
+  const headerMap = getValidatedLearningHeaderMap_(sheet, LEARNING_CANDIDATE_HEADERS, LEARNING_CANDIDATE_SHEET_NAME);
+  const now = new Date().toISOString();
+  if (sheet.getLastRow() >= 2) {
+    const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i][headerMap.candidateKey] || '') === candidate.candidateKey) {
+        const rowNumber = i + 2;
+        ['updatedAt', 'lastCaseId', 'lastLogId'].forEach(function(header) {
+          const range = sheet.getRange(rowNumber, headerMap[header] + 1);
+          range.setNumberFormat('@');
+          range.setValue(escapeOcrCorrectionLogCell_(
+            header === 'updatedAt' ? now : (header === 'lastCaseId' ? candidate.caseId : candidate.logId)
+          ));
+        });
+        return { created: false };
+      }
+    }
+  }
+  appendLearningObject_(sheet, LEARNING_CANDIDATE_HEADERS, {
+    candidateKey: candidate.candidateKey,
+    candidateId: candidate.candidateId,
+    firstLogId: candidate.logId,
+    term: candidate.term,
+    correctedTerm: candidate.correctedTerm,
+    semanticKey: candidate.semanticKey,
+    learningType: candidate.learningType,
+    agencyType: candidate.agencyType,
+    agencyName: candidate.agencyName,
+    status: 'candidate',
+    createdAt: now,
+    updatedAt: now,
+    lastCaseId: candidate.caseId,
+    lastLogId: candidate.logId,
+  });
+  return { created: true };
+}
+
+function appendLearningDecision_(sheet, candidate, decision) {
+  appendLearningObject_(sheet, LEARNING_DECISION_HEADERS, {
+    decisionId: Utilities.getUuid(),
+    candidateId: candidate.candidateId,
+    logId: candidate.logId,
+    candidateKey: candidate.candidateKey,
+    caseId: candidate.caseId,
+    fieldKey: candidate.fieldKey,
+    decision: decision,
+    term: candidate.term,
+    correctedTerm: candidate.correctedTerm,
+    learningType: candidate.learningType,
+    agencyType: candidate.agencyType,
+    agencyName: candidate.agencyName,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+function api_recordLearningDecision(caseId, decisionPayload) {
+  const safeCaseId = String(caseId || '').trim();
+  const payload = decisionPayload || {};
+  const candidateId = String(payload.candidateId || '').trim();
+  const decision = String(payload.decision || '').trim();
+  if (!safeCaseId || safeCaseId.length > 100 || !candidateId || candidateId.length > 100) {
+    return apiError_('学習候補を特定できなかったにゃん。');
+  }
+  if (!LEARNING_DECISIONS.includes(decision)) return apiError_('学習候補の操作が正しくないにゃん。');
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) return apiError_('学習候補を記録できなかったにゃん。案件登録は完了しています。');
+  try {
+    const log = findOcrCorrectionLogForDecision_(safeCaseId, candidateId);
+    const candidate = buildLearningReviewCandidateFromLog_(log);
+    if (!candidate || candidate.caseId !== safeCaseId) return apiError_('この修正は学習候補の対象ではないにゃん。');
+
+    const decisionSheet = getOrCreateLearningSheet_(LEARNING_DECISION_SHEET_NAME, LEARNING_DECISION_HEADERS);
+    const existing = findLearningDecisionByLogId_(decisionSheet, candidate.logId);
+    if (existing) {
+      return apiOk_({
+        candidateId: candidate.candidateId,
+        decision: String(existing.decision || ''),
+        alreadyRecorded: true,
+      });
+    }
+
+    if (decision === 'register') upsertLearningCandidate_(candidate);
+    appendLearningDecision_(decisionSheet, candidate, decision);
+    return apiOk_({candidateId: candidate.candidateId, decision: decision, alreadyRecorded: false});
+  } catch (e) {
+    Logger.log('api_recordLearningDecision error: ' + e.stack);
+    return apiError_('学習候補を記録できなかったにゃん。案件登録は完了しています。');
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getSemanticRegistryEntry_(semanticKey) {
+  const key = String(semanticKey || '').trim();
+  return SEMANTIC_KEY_REGISTRY.find(function(entry) {
+    return entry.semanticKey === key && entry.status === 'active';
+  }) || null;
+}
+
+function normalizeSemanticTerm_(value) {
+  return normalizeLearningComparisonText_(value).replace(/[：:]+$/g, '').trim();
+}
+
+function semanticHeadingDefinitions_() {
+  return [
+    {
+      semanticKey: 'delivery.place',
+      terms: ['引渡場所', '引渡し場所', '搬入場所', '納入場所', '納品場所', '納地', '履行場所'],
+      mediumTerms: ['納地'],
+    },
+    {
+      semanticKey: 'delivery.date',
+      terms: ['引渡年月日', '引渡期限', '履行期限', '履行期間', '納期'],
+      mediumTerms: ['履行期間'],
+    },
+    {
+      semanticKey: 'submission.deadline',
+      terms: ['見積書提出期限', '見積提出期限', '入札書提出期限', '提出期限'],
+      mediumTerms: ['提出期限'],
+    },
+    {
+      semanticKey: 'submission.method',
+      terms: ['見積書提出方法', '見積提出方法', '入札方法', '提出方法', '提出手段'],
+      mediumTerms: ['入札方法', '提出方法'],
+    },
+    {
+      semanticKey: 'question.deadline',
+      terms: ['質問書提出期限', '質問提出期限', '質問受付期限', '質疑期限'],
+      mediumTerms: [],
+    },
+  ];
+}
+
+function buildSemanticKeyOptions_(suggestedSemanticKey) {
+  const suggested = getSemanticRegistryEntry_(suggestedSemanticKey);
+  const ordered = [];
+  if (suggested) ordered.push(suggested);
+  SEMANTIC_KEY_REGISTRY.forEach(function(entry) {
+    if (entry.status !== 'active' || ordered.some(function(item) { return item.semanticKey === entry.semanticKey; })) return;
+    if (suggested && entry.category === suggested.category) ordered.push(entry);
+  });
+  SEMANTIC_KEY_REGISTRY.forEach(function(entry) {
+    if (entry.status === 'active' && !ordered.some(function(item) { return item.semanticKey === entry.semanticKey; })) {
+      ordered.push(entry);
+    }
+  });
+  return ordered.slice(0, 4).map(function(entry) {
+    return { semanticKey: entry.semanticKey, displayName: entry.displayName };
+  });
+}
+
+function compactSemanticEvidence_(lines, lineIndex) {
+  const start = Math.max(0, lineIndex - 1);
+  const end = Math.min(lines.length, lineIndex + 2);
+  return truncate_(lines.slice(start, end).map(function(line) {
+    return normalizeLearningComparisonText_(line);
+  }).filter(Boolean).join('\n'), 300);
+}
+
+function buildSemanticHeadingCandidates_(caseId, docs, agencyName) {
+  const safeCaseId = String(caseId || '').trim();
+  if (!safeCaseId || !Array.isArray(docs) || !docs.length) return [];
+  const definitions = semanticHeadingDefinitions_();
+  const agency = truncate_(String(agencyName || ''), 300);
+  const agencyType = detectAgencyType_(agency);
+  const seen = {};
+  const candidates = [];
+
+  docs.forEach(function(doc) {
+    const text = String(doc && doc.ocrText || '').replace(/\r\n?/g, '\n');
+    const documentType = truncate_(String(doc && doc.documentType || 'その他'), 100);
+    const pages = text.split(/\f/);
+    pages.forEach(function(pageText, pageIndex) {
+      const lines = String(pageText || '').split('\n');
+      lines.forEach(function(rawLine, lineIndex) {
+        const line = normalizeLearningComparisonText_(rawLine);
+        if (!line || line.length > 180) return;
+        const matches = [];
+        definitions.forEach(function(definition) {
+          definition.terms.forEach(function(term) {
+            const index = line.indexOf(term);
+            if (index >= 0) matches.push({definition: definition, term: term, index: index});
+          });
+        });
+        if (!matches.length) return;
+        matches.sort(function(a, b) { return b.term.length - a.term.length || a.index - b.index; });
+        const best = matches[0];
+        const definition = best.definition;
+        const matchedTerm = best.term;
+        const normalizedTerm = normalizeSemanticTerm_(matchedTerm);
+        if (!normalizedTerm || normalizedTerm.length > 60) return;
+        const duplicateKey = JSON.stringify([normalizedTerm, safeCaseId, documentType, normalizedTerm]);
+        if (seen[duplicateKey]) return;
+        seen[duplicateKey] = true;
+        const suffix = line.slice(best.index + matchedTerm.length).replace(/^[\s:：・-]+/, '');
+        const confidence = definition.mediumTerms.includes(matchedTerm) ? 'medium' : 'high';
+        candidates.push({
+          candidateId: Utilities.getUuid(),
+          caseId: safeCaseId,
+          term: matchedTerm,
+          normalizedTerm: normalizedTerm,
+          suggestedSemanticKey: definition.semanticKey,
+          selectedSemanticKey: '',
+          documentType: documentType,
+          sourceLabel: matchedTerm,
+          relation: suffix ? 'inline' : 'below',
+          sourceText: compactSemanticEvidence_(lines, lineIndex),
+          pageNumber: pages.length > 1 ? String(pageIndex + 1) : '',
+          agencyType: agencyType,
+          agencyName: agency,
+          scope: 'unassigned',
+          status: 'pending',
+          confidence: confidence,
+        });
+      });
+    });
+  });
+  return candidates.slice(0, 6);
+}
+
+function semanticCandidateDuplicateKey_(candidate) {
+  return JSON.stringify([
+    normalizeSemanticTerm_(candidate.normalizedTerm || candidate.term),
+    String(candidate.caseId || '').trim(),
+    String(candidate.documentType || '').trim(),
+    normalizeSemanticTerm_(candidate.sourceLabel),
+  ]);
+}
+
+function ensureSemanticDictionarySheet_() {
+  return getOrCreateLearningSheet_(SEMANTIC_DICTIONARY_SHEET_NAME, SEMANTIC_DICTIONARY_HEADERS);
+}
+
+function saveSemanticLearningCandidates_(candidates) {
+  candidates = Array.isArray(candidates) ? candidates : [];
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) throw new Error('にゃん語辞典候補の書き込みロックを取得できませんでした');
+  try {
+    const sheet = getOrCreateLearningSheet_(SEMANTIC_LEARNING_CANDIDATE_SHEET_NAME, SEMANTIC_LEARNING_CANDIDATE_HEADERS);
+    ensureSemanticDictionarySheet_();
+    if (!candidates.length) return [];
+    const headerMap = getValidatedLearningHeaderMap_(sheet, SEMANTIC_LEARNING_CANDIDATE_HEADERS, SEMANTIC_LEARNING_CANDIDATE_SHEET_NAME);
+    const existingKeys = {};
+    if (sheet.getLastRow() >= 2) {
+      const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
+      rows.forEach(function(row) {
+        existingKeys[semanticCandidateDuplicateKey_({
+          normalizedTerm: row[headerMap.normalizedTerm],
+          caseId: row[headerMap.caseId],
+          documentType: row[headerMap.documentType],
+          sourceLabel: row[headerMap.sourceLabel],
+        })] = true;
+      });
+    }
+    const saved = [];
+    candidates.forEach(function(candidate) {
+      const duplicateKey = semanticCandidateDuplicateKey_(candidate);
+      if (existingKeys[duplicateKey]) return;
+      const now = new Date().toISOString();
+      appendLearningObject_(sheet, SEMANTIC_LEARNING_CANDIDATE_HEADERS, {
+        candidateId: candidate.candidateId,
+        caseId: candidate.caseId,
+        term: truncate_(candidate.term, 100),
+        normalizedTerm: truncate_(candidate.normalizedTerm, 100),
+        suggestedSemanticKey: candidate.suggestedSemanticKey,
+        selectedSemanticKey: '',
+        documentType: truncate_(candidate.documentType, 100),
+        sourceLabel: truncate_(candidate.sourceLabel, 100),
+        relation: truncate_(candidate.relation, 30),
+        sourceText: truncate_(candidate.sourceText, 300),
+        pageNumber: truncate_(candidate.pageNumber, 20),
+        agencyType: truncate_(candidate.agencyType, 100),
+        agencyName: truncate_(candidate.agencyName, 300),
+        scope: 'unassigned',
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now,
+        decidedAt: '',
+      });
+      existingKeys[duplicateKey] = true;
+      saved.push(candidate);
+    });
+    return saved;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function buildSemanticReviewResponse_(candidates) {
+  return (Array.isArray(candidates) ? candidates : []).map(function(candidate) {
+    return {
+      candidateId: candidate.candidateId,
+      term: candidate.term,
+      documentType: candidate.documentType,
+      sourceText: candidate.sourceText,
+      suggestedSemanticKey: candidate.suggestedSemanticKey,
+      preselectedSemanticKey: candidate.confidence === 'high' ? candidate.suggestedSemanticKey : '',
+      semanticKeyOptions: buildSemanticKeyOptions_(candidate.suggestedSemanticKey),
+    };
+  });
+}
+
+function findSemanticLearningCandidate_(caseId, candidateId) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SEMANTIC_LEARNING_CANDIDATE_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) throw new Error('にゃん語辞典候補が見つかりません');
+  const headerMap = getValidatedLearningHeaderMap_(sheet, SEMANTIC_LEARNING_CANDIDATE_HEADERS, SEMANTIC_LEARNING_CANDIDATE_SHEET_NAME);
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][headerMap.candidateId] || '').trim() === candidateId &&
+        String(rows[i][headerMap.caseId] || '').trim() === caseId) {
+      return { sheet: sheet, headerMap: headerMap, rowNumber: i + 2, value: learningRowToObject_(headers, rows[i]) };
+    }
+  }
+  throw new Error('案件と一致するにゃん語辞典候補が見つかりません');
+}
+
+function setSemanticCandidateDecision_(found, decision, selectedSemanticKey) {
+  const statusMap = {
+    teach: 'candidate',
+    defer: 'deferred',
+    not_heading: 'rejected',
+    unmapped: 'unmapped',
+  };
+  const now = new Date().toISOString();
+  const values = {
+    selectedSemanticKey: decision === 'teach' ? selectedSemanticKey : '',
+    status: statusMap[decision],
+    updatedAt: now,
+    decidedAt: now,
+  };
+  Object.keys(values).forEach(function(header) {
+    const range = found.sheet.getRange(found.rowNumber, found.headerMap[header] + 1);
+    range.setNumberFormat('@');
+    range.setValue(escapeOcrCorrectionLogCell_(values[header]));
+  });
+  return values.status;
+}
+
+function api_recordSemanticCandidateDecision(caseId, decisionPayload) {
+  const safeCaseId = String(caseId || '').trim();
+  const payload = decisionPayload || {};
+  const candidateId = String(payload.candidateId || '').trim();
+  const decision = String(payload.decision || '').trim();
+  const selectedSemanticKey = String(payload.selectedSemanticKey || '').trim();
+  if (!safeCaseId || safeCaseId.length > 100 || !candidateId || candidateId.length > 100) {
+    return apiError_('にゃん語辞典候補を特定できなかったにゃん。');
+  }
+  if (!SEMANTIC_CANDIDATE_DECISIONS.includes(decision)) {
+    return apiError_('にゃん語辞典の操作が正しくないにゃん。');
+  }
+  if (decision === 'teach' && !getSemanticRegistryEntry_(selectedSemanticKey)) {
+    return apiError_('選択した意味は、にゃん語辞典で使用できないにゃん。');
+  }
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) return apiError_('にゃん語辞典候補を記録できなかったにゃん。案件登録は完了しています。');
+  try {
+    const found = findSemanticLearningCandidate_(safeCaseId, candidateId);
+    const currentStatus = String(found.value.status || '').trim();
+    if (currentStatus !== 'pending') {
+      return apiOk_({
+        candidateId: candidateId,
+        decision: decision,
+        status: currentStatus,
+        alreadyRecorded: true,
+      });
+    }
+    const status = setSemanticCandidateDecision_(found, decision, selectedSemanticKey);
+    return apiOk_({candidateId: candidateId, decision: decision, status: status, alreadyRecorded: false});
+  } catch (e) {
+    Logger.log('api_recordSemanticCandidateDecision error: ' + e.stack);
+    return apiError_('にゃん語辞典候補を記録できなかったにゃん。案件登録は完了しています。');
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function api_savePhase2Draft(sessionId, payload) {
   try {
     if (!sessionId) return apiError_('セッションIDがないにゃん。');
@@ -2492,13 +3053,31 @@ function api_registerPhase2Case(sessionId, payload) {
     const additionalFiles = copyAdditionalSessionDocuments_(docs, result);
     result = finalizeRegisteredCaseJson_(result, docs, additionalFiles);
     let learningLogCount = 0;
+    let learningReview = [];
+    let semanticReview = [];
     const learningWarnings = [];
     try {
       const learningLogs = buildOcrCorrectionLogs_(result.registration.projectId, sessionId, clean);
       learningLogCount = saveOcrCorrectionLogs_(learningLogs);
+      if (learningLogCount === learningLogs.length) {
+        learningReview = buildLearningReviewCandidates_(learningLogs);
+      }
     } catch (learningError) {
       Logger.log('OCR correction log warning: ' + learningError.stack);
       learningWarnings.push('修正ログを保存できませんでした。案件登録は完了しています。');
+    }
+    try {
+      const agencyName = String(clean.basic && clean.basic.org && clean.basic.org.value || '');
+      const semanticCandidates = buildSemanticHeadingCandidates_(
+        result.registration.projectId,
+        docs,
+        agencyName
+      );
+      const savedSemanticCandidates = saveSemanticLearningCandidates_(semanticCandidates);
+      semanticReview = buildSemanticReviewResponse_(savedSemanticCandidates);
+    } catch (semanticError) {
+      Logger.log('Semantic learning candidate warning: ' + semanticError.stack);
+      learningWarnings.push('にゃん語辞典候補を準備できませんでした。案件登録は完了しています。');
     }
     markExtractSessionRegistered_(sessionId, result.registration.projectId, result.registration.folderUrl);
     cleanupRegisteredTempDocuments_(docs);
@@ -2513,6 +3092,8 @@ function api_registerPhase2Case(sessionId, payload) {
       savedFiles: result.registration.savedFiles || {},
       learningLogCount: learningLogCount,
       learningWarnings: learningWarnings,
+      learningReview: learningReview,
+      semanticReview: semanticReview,
       message: '案件ID ' + result.registration.projectId + ' で正式登録できたにゃん！🐈✨'
     });
   } catch (e) {
