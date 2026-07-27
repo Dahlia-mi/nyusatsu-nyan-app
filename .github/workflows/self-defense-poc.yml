@@ -1,0 +1,63 @@
+name: Self-defense procurement PoC
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Once daily at 07:17 JST (22:17 UTC on the previous day).
+    - cron: "17 22 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-defense-procurement-poc
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore HTTP validator state
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/eafin-http.json
+          key: eafin-http-state-${{ github.run_id }}
+          restore-keys: |
+            eafin-http-state-
+
+      - name: Run parser tests
+        run: node --test tests/self-defense-poc.test.mjs
+
+      - name: Fetch and extract notices once
+        run: node scripts/self-defense-poc.mjs
+
+      - name: Add result to job summary
+        if: always()
+        run: |
+          echo '## Self-defense procurement PoC' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat artifacts/eafin-summary.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload CSV and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eafin-poc-${{ github.run_id }}
+          path: |
+            artifacts/eafin-notices.csv
+            artifacts/eafin-summary.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Save HTTP validator state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/eafin-http.json
+          key: eafin-http-state-${{ github.run_id }}
