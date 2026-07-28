@@ -390,6 +390,12 @@ function toDisplayDateTime_(value) {
 const SUPPLIER_ESTIMATE_SHEET = '業者見積DB';
 const SUPPLIER_ESTIMATE_DEFAULT_TAX_RATE = 0.10;
 const SUPPLIER_ESTIMATE_TAX_RATE_PROPERTY = 'SUPPLIER_ESTIMATE_TAX_RATE';
+const SUPPLIER_RESEARCH_SPREADSHEET_ID = '11enYdR_U4m4AlmGE_w9eJCq9jOw6eKSkBMSJSUzzRyo';
+const SUPPLIER_RESEARCH_SHEET = '案件別仕入先管理';
+const SUPPLIER_RESEARCH_COMPANY_SHEET = '会社マスター';
+const SUPPLIER_RESEARCH_KEY_PREFIX = 'SUPPLIER_RESEARCH';
+const SUPPLIER_RESEARCH_NOTE_START = '【仕入先調査マスター同期】';
+const SUPPLIER_RESEARCH_NOTE_END = '【仕入先調査マスター同期ここまで】';
 const SUPPLIER_ESTIMATE_HEADERS = [
   '見積ID', '案件ID', '仕入先名', '見積金額', '税区分',
   '送料区分', '送料金額', '納期', 'PDF URL', '備考',
@@ -491,14 +497,30 @@ function isSafeSupplierEstimateUrl_(value) {
   return /^https:\/\/[^\s"'<>]+$/i.test(String(value || '').trim());
 }
 
+function isSupplierResearchEstimate_(estimate) {
+  const key = typeof estimate === 'string'
+    ? estimate
+    : (estimate && estimate.idempotencyKey);
+  return String(key || '').trim().indexOf(`${SUPPLIER_RESEARCH_KEY_PREFIX}:`) === 0;
+}
+
+function isSupplierResearchAdoptionBlocked_(estimate) {
+  return isSupplierResearchEstimate_(estimate) &&
+    (estimate.taxCategory === '未確認' || estimate.shippingCategory === '不明');
+}
+
 function normalizeSupplierEstimate_(payload) {
   const input = payload || {};
   const supplierName = String(input.supplierName || '').trim();
   if (!supplierName) throw new Error('仕入先名を入力してほしいにゃん。');
   const taxCategory = String(input.taxCategory || '').trim();
-  if (['税込', '税抜'].indexOf(taxCategory) === -1) throw new Error('税区分を選んでほしいにゃん。');
+  if (['税込', '税抜', '未確認'].indexOf(taxCategory) === -1) throw new Error('税区分を選んでほしいにゃん。');
   const shippingCategory = String(input.shippingCategory || '').trim();
   if (['送料込み', '送料別', '不明'].indexOf(shippingCategory) === -1) throw new Error('送料区分を選んでほしいにゃん。');
+  const parsedShippingAmount = parseSupplierEstimateAmount_(input.shippingAmount, false, '送料金額');
+  if (shippingCategory === '送料別' && parsedShippingAmount === null) {
+    throw new Error('送料別の場合は送料金額を入力してほしいにゃん。');
+  }
   return {
     estimateId: String(input.estimateId || '').trim(),
     itemId: String(input.itemId || '').trim(),
@@ -507,7 +529,7 @@ function normalizeSupplierEstimate_(payload) {
     quoteAmount: parseSupplierEstimateAmount_(input.quoteAmount, true, '見積金額'),
     taxCategory: taxCategory,
     shippingCategory: shippingCategory,
-    shippingAmount: parseSupplierEstimateAmount_(input.shippingAmount, false, '送料金額'),
+    shippingAmount: shippingCategory === '送料込み' ? 0 : parsedShippingAmount,
     deliveryDate: String(input.deliveryDate || '').trim(),
     pdfUrl: validateSupplierEstimateUrl_(input.pdfUrl),
     note: String(input.note || '').trim(),
@@ -522,6 +544,9 @@ function calculateSupplierEstimateCost_(estimate, taxRate) {
   }
   if (!estimate || !Number.isFinite(estimate.quoteAmount) || estimate.quoteAmount < 0) {
     return { confirmed: false, amountTaxExclusive: null, warning: '見積金額が不正です' };
+  }
+  if (['税込', '税抜'].indexOf(estimate.taxCategory) === -1) {
+    return { confirmed: false, amountTaxExclusive: null, warning: '税区分未確認のため原価未確定' };
   }
   if (estimate.shippingCategory === '不明') {
     return { confirmed: false, amountTaxExclusive: null, warning: '送料不明のため原価未確定' };
@@ -545,7 +570,7 @@ function supplierEstimateRowObject_(row, map, rowNumber) {
   const shippingRaw = read('送料金額');
   const costRaw = read('採用原価(税抜)');
   const pdfUrlRaw = String(read('PDF URL') || '').trim();
-  return {
+  const estimate = {
     rowNumber: rowNumber,
     estimateId: String(read('見積ID') || '').trim(),
     caseId: String(read('案件ID') || '').trim(),
@@ -568,6 +593,9 @@ function supplierEstimateRowObject_(row, map, rowNumber) {
     createdAt: toDisplayDateTime_(read('登録日時')),
     updatedAt: toDisplayDateTime_(read('更新日時')),
   };
+  estimate.supplierResearchSync = isSupplierResearchEstimate_(estimate);
+  estimate.adoptionBlocked = isSupplierResearchAdoptionBlocked_(estimate);
+  return estimate;
 }
 
 function getSupplierEstimateRows_(sheet, caseId) {
@@ -629,6 +657,43 @@ function buildSupplierEstimateSummary_(caseId, expectedBidValue, estimates) {
     loss: ready && profit < 0,
     warnings: warnings,
   };
+}
+
+function buildSupplierEstimateCaseProjection_(summary) {
+  const source = summary || {};
+  const ready = source.status === 'calculated' &&
+    Number.isFinite(source.adoptedCostTaxExclusive) &&
+    Number.isFinite(source.expectedProfit) &&
+    Number.isFinite(source.expectedProfitRate);
+  return {
+    cost: ready ? source.adoptedCostTaxExclusive : '',
+    profit: ready ? source.expectedProfit : '',
+    profitRate: ready ? source.expectedProfitRate / 100 : '',
+  };
+}
+
+/**
+ * 業者見積DBの採用済み行を正本として、01_案件管理の集計表示へ投影する。
+ * Web画面とシートが同じbuildSupplierEstimateSummary_の結果を参照するための唯一の書戻し経路。
+ */
+function syncSupplierEstimateSummaryToCaseSheet_(ss, caseId) {
+  const found = findCaseRowById_(ss, caseId);
+  const requiredHeaders = ['原価合計', '粗利益', '利益率'];
+  requiredHeaders.forEach((header) => {
+    if (!found.headerMap[header]) {
+      throw new Error(`01_案件管理に「${header}」列が見つからないにゃん。`);
+    }
+  });
+  const estimateSheet = ss.getSheetByName(SUPPLIER_ESTIMATE_SHEET);
+  const estimates = estimateSheet ? getSupplierEstimateRows_(estimateSheet, caseId) : [];
+  const expected = found.sheet.getRange(found.row, found.headerMap[CASE_HEADERS.AMOUNT]).getValue();
+  const projection = buildSupplierEstimateCaseProjection_(
+    buildSupplierEstimateSummary_(caseId, expected, estimates)
+  );
+  found.sheet.getRange(found.row, found.headerMap['原価合計']).setValue(projection.cost);
+  found.sheet.getRange(found.row, found.headerMap['粗利益']).setValue(projection.profit);
+  found.sheet.getRange(found.row, found.headerMap['利益率']).setValue(projection.profitRate);
+  return projection;
 }
 
 function buildSupplierEstimateResponse_(ss, caseId) {
@@ -699,10 +764,295 @@ function api_saveSupplierEstimate(caseId, payload) {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     findCaseRowById_(ss, caseId);
     const saved = saveSupplierEstimate_(ss, caseId, normalized);
+    const savedEstimateSheet = ss.getSheetByName(SUPPLIER_ESTIMATE_SHEET);
+    const hasAdoptedEstimate = savedEstimateSheet &&
+      getSupplierEstimateRows_(savedEstimateSheet, caseId).some((estimate) => estimate.adopted);
+    if (hasAdoptedEstimate) syncSupplierEstimateSummaryToCaseSheet_(ss, caseId);
     const response = buildSupplierEstimateResponse_(ss, caseId);
     response.savedEstimateId = saved.estimateId;
     response.duplicate = saved.duplicate;
     return apiOk_(response);
+  } catch (e) {
+    return apiError_(e.message);
+  } finally {
+    if (acquired && lock) lock.releaseLock();
+  }
+}
+
+function normalizeSupplierResearchKeyPart_(value) {
+  return String(value == null ? '' : value)
+    .normalize('NFKC')
+    .trim()
+    .replace(/[\s\u3000]+/g, ' ')
+    .toLowerCase();
+}
+
+function buildSupplierResearchIdempotencyKey_(caseId, category, supplierName) {
+  return [
+    SUPPLIER_RESEARCH_KEY_PREFIX,
+    normalizeSupplierResearchKeyPart_(caseId),
+    normalizeSupplierResearchKeyPart_(category),
+    normalizeSupplierResearchKeyPart_(supplierName),
+  ].join(':');
+}
+
+function parseSupplierResearchAmount_(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const normalized = String(value)
+    .normalize('NFKC')
+    .replace(/[￥¥円,\s\u3000]/g, '');
+  if (!/^\d+(?:\.\d+)?$/.test(normalized)) return null;
+  const amount = Number(normalized);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
+
+function supplierResearchHeaderMap_(headers, requiredHeaders) {
+  const map = {};
+  (headers || []).forEach((header, index) => {
+    const name = String(header || '').trim();
+    if (name && map[name] === undefined) map[name] = index;
+  });
+  const missing = (requiredHeaders || []).filter((header) => map[header] === undefined);
+  if (missing.length) {
+    throw new Error(`${SUPPLIER_RESEARCH_SHEET}に必須列「${missing.join('、')}」が見つからないため、同期を中止したにゃん。`);
+  }
+  return map;
+}
+
+function supplierResearchBoolean_(value) {
+  return value === true || String(value || '').trim().toUpperCase() === 'TRUE';
+}
+
+function supplierResearchValue_(row, map, header) {
+  return map[header] === undefined ? '' : row[map[header]];
+}
+
+function buildSupplierResearchNoteBlock_(source, paymentTerms) {
+  const lines = [SUPPLIER_RESEARCH_NOTE_START];
+  const fields = [
+    ['案件カテゴリ', source.category],
+    ['担当者', source.contact],
+    ['電話', source.phone],
+    ['メール', source.email],
+    ['納期回答', source.deliveryDate],
+    ['売掛対応', source.credit],
+    ['支払条件', paymentTerms],
+    ['元備考', source.note],
+  ];
+  fields.forEach((field) => {
+    const value = String(field[1] == null ? '' : field[1]).trim();
+    if (value) lines.push(`${field[0]}：${value}`);
+  });
+  lines.push('この同期データは案件単位の見積です。品目別の分割管理には未対応です。');
+  lines.push('税区分と送料条件を確認してから採用してください。');
+  lines.push(SUPPLIER_RESEARCH_NOTE_END);
+  return lines.join('\n');
+}
+
+function replaceSupplierResearchNoteBlock_(existingNote, block) {
+  const current = String(existingNote || '');
+  const start = current.indexOf(SUPPLIER_RESEARCH_NOTE_START);
+  const end = current.indexOf(SUPPLIER_RESEARCH_NOTE_END, start);
+  if (start >= 0 && end >= start) {
+    return (current.slice(0, start) + block +
+      current.slice(end + SUPPLIER_RESEARCH_NOTE_END.length)).trim();
+  }
+  return [current.trim(), block].filter(Boolean).join('\n\n');
+}
+
+function buildSupplierResearchCompanyTerms_(companyValues) {
+  if (!companyValues || !companyValues.length) return {};
+  const map = supplierResearchHeaderMap_(companyValues[0], []);
+  if (map['会社名'] === undefined || map['支払条件'] === undefined) return {};
+  const result = {};
+  companyValues.slice(1).forEach((row) => {
+    const company = normalizeSupplierResearchKeyPart_(row[map['会社名']]);
+    if (company && result[company] === undefined) {
+      result[company] = String(row[map['支払条件']] || '').trim();
+    }
+  });
+  return result;
+}
+
+function extractSupplierResearchRows_(values, caseId, companyTerms) {
+  if (!values || !values.length) {
+    throw new Error(`${SUPPLIER_RESEARCH_SHEET}にデータがないため、同期を中止したにゃん。`);
+  }
+  const map = supplierResearchHeaderMap_(values[0], ['案件ID', '会社名', '見積取得', '概算金額']);
+  const targetCaseId = String(caseId || '').trim();
+  const rows = [];
+  const excluded = [];
+  const seenKeys = {};
+  values.slice(1).forEach((row, index) => {
+    const rowNumber = index + 2;
+    const sourceCaseId = String(supplierResearchValue_(row, map, '案件ID') || '').trim();
+    if (sourceCaseId !== targetCaseId) return;
+    const supplierName = String(supplierResearchValue_(row, map, '会社名') || '').trim();
+    if (!supplierName) {
+      excluded.push(`行${rowNumber}: 会社名が空のため除外`);
+      return;
+    }
+    if (!supplierResearchBoolean_(supplierResearchValue_(row, map, '見積取得'))) {
+      excluded.push(`${supplierName}: 見積取得が未完了のため除外`);
+      return;
+    }
+    const quoteAmount = parseSupplierResearchAmount_(supplierResearchValue_(row, map, '概算金額'));
+    if (quoteAmount === null) {
+      excluded.push(`${supplierName}: 概算金額が空欄または不正なため除外`);
+      return;
+    }
+    const source = {
+      category: supplierResearchValue_(row, map, '案件カテゴリ'),
+      contact: supplierResearchValue_(row, map, '担当者'),
+      email: supplierResearchValue_(row, map, 'メール'),
+      phone: supplierResearchValue_(row, map, '電話'),
+      deliveryDate: supplierResearchValue_(row, map, '納期対応'),
+      credit: supplierResearchValue_(row, map, '売掛対応'),
+      note: supplierResearchValue_(row, map, '備考'),
+    };
+    const key = buildSupplierResearchIdempotencyKey_(targetCaseId, source.category, supplierName);
+    if (seenKeys[key]) {
+      excluded.push(`${supplierName}: 同じ案件・カテゴリ・会社の行が複数あるため、行${rowNumber}を除外`);
+      return;
+    }
+    seenKeys[key] = true;
+    const paymentTerms = (companyTerms || {})[normalizeSupplierResearchKeyPart_(supplierName)] || '';
+    rows.push({
+      sourceRow: rowNumber,
+      caseId: targetCaseId,
+      supplierName: supplierName,
+      quoteAmount: quoteAmount,
+      deliveryDate: toDisplayDate_(source.deliveryDate),
+      noteBlock: buildSupplierResearchNoteBlock_(source, paymentTerms),
+      idempotencyKey: key,
+    });
+  });
+  return { rows: rows, excluded: excluded };
+}
+
+function supplierResearchComparable_(estimate, incoming) {
+  return {
+    supplierName: String(estimate.supplierName || '').trim(),
+    quoteAmount: Number(estimate.quoteAmount),
+    deliveryDate: String(estimate.deliveryDate || '').trim(),
+    note: replaceSupplierResearchNoteBlock_(estimate.note, incoming.noteBlock),
+  };
+}
+
+function buildSupplierResearchSyncPlan_(incomingRows, existingEstimates) {
+  const index = {};
+  (existingEstimates || []).forEach((estimate) => {
+    if (estimate.idempotencyKey) index[estimate.idempotencyKey] = estimate;
+  });
+  const plan = { inserts: [], updates: [], unchanged: [], adoptedSkipped: [], warnings: [] };
+  (incomingRows || []).forEach((incoming) => {
+    const existing = index[incoming.idempotencyKey];
+    if (!existing) {
+      plan.inserts.push(incoming);
+      return;
+    }
+    const comparable = supplierResearchComparable_(existing, incoming);
+    const changed = comparable.supplierName !== incoming.supplierName ||
+      comparable.quoteAmount !== incoming.quoteAmount ||
+      comparable.deliveryDate !== incoming.deliveryDate ||
+      comparable.note !== String(existing.note || '');
+    if (existing.adopted) {
+      plan.adoptedSkipped.push(incoming);
+      plan.warnings.push(changed
+        ? `${incoming.supplierName}は採用済みのため更新しませんでした。仕入先調査マスター側に変更があります。`
+        : `${incoming.supplierName}は採用済みのため同期対象外としました。`);
+      return;
+    }
+    if (!changed) {
+      plan.unchanged.push(incoming);
+      return;
+    }
+    plan.updates.push({
+      incoming: incoming,
+      existing: existing,
+      values: comparable,
+    });
+  });
+  return plan;
+}
+
+function applySupplierResearchSyncPlan_(sheet, map, plan, now) {
+  plan.updates.forEach((update) => {
+    writeSupplierEstimateFields_(sheet, map, update.existing.rowNumber, {
+      '仕入先名': update.incoming.supplierName,
+      '見積金額': update.incoming.quoteAmount,
+      '納期': update.incoming.deliveryDate,
+      '備考': update.values.note,
+      '更新日時': now,
+    });
+  });
+  plan.inserts.forEach((incoming) => {
+    const normalized = {
+      estimateId: '',
+      itemId: '',
+      supplierId: '',
+      supplierName: incoming.supplierName,
+      quoteAmount: incoming.quoteAmount,
+      taxCategory: '未確認',
+      shippingCategory: '不明',
+      shippingAmount: null,
+      deliveryDate: incoming.deliveryDate,
+      pdfUrl: '',
+      note: incoming.noteBlock,
+      idempotencyKey: incoming.idempotencyKey,
+    };
+    const rowNumber = sheet.getLastRow() + 1;
+    const record = buildSupplierEstimateSaveRecord_(sheet, map, incoming.caseId, normalized, null, now);
+    writeSupplierEstimateFields_(sheet, map, rowNumber, record);
+  });
+}
+
+function api_syncSupplierResearch(caseId) {
+  let lock = null;
+  let acquired = false;
+  try {
+    const targetCaseId = String(caseId || '').trim();
+    if (!targetCaseId) return apiError_('案件IDが指定されていないにゃん。');
+    lock = LockService.getDocumentLock();
+    acquired = lock.tryLock(10000);
+    if (!acquired) return apiError_('ほかの更新処理中にゃん。少し待ってから、もう一度取り込んでほしいにゃん。');
+
+    const destination = SpreadsheetApp.getActiveSpreadsheet();
+    findCaseRowById_(destination, targetCaseId);
+
+    let source;
+    try {
+      source = SpreadsheetApp.openById(SUPPLIER_RESEARCH_SPREADSHEET_ID);
+    } catch (openError) {
+      throw new Error('仕入先調査マスターを開けませんでした。実行ユーザーの閲覧権限を確認してほしいにゃん。');
+    }
+    const sourceSheet = source.getSheetByName(SUPPLIER_RESEARCH_SHEET);
+    if (!sourceSheet) throw new Error(`仕入先調査マスターに「${SUPPLIER_RESEARCH_SHEET}」シートが見つからないにゃん。`);
+    const sourceValues = sourceSheet.getDataRange().getValues();
+    const companySheet = source.getSheetByName(SUPPLIER_RESEARCH_COMPANY_SHEET);
+    const companyValues = companySheet ? companySheet.getDataRange().getValues() : [];
+    const companyTerms = buildSupplierResearchCompanyTerms_(companyValues);
+    const extracted = extractSupplierResearchRows_(sourceValues, targetCaseId, companyTerms);
+
+    const destinationSheet = ensureSupplierEstimateSheetForWrite_(destination);
+    const map = supplierEstimateHeaderMap_(destinationSheet);
+    const existing = getSupplierEstimateRows_(destinationSheet, targetCaseId);
+    const plan = buildSupplierResearchSyncPlan_(extracted.rows, existing);
+    applySupplierResearchSyncPlan_(destinationSheet, map, plan, new Date());
+    SpreadsheetApp.flush();
+
+    return apiOk_({
+      added: plan.inserts.length,
+      updated: plan.updates.length,
+      unchanged: plan.unchanged.length,
+      excluded: extracted.excluded.length,
+      adoptedSkipped: plan.adoptedSkipped.length,
+      warnings: plan.warnings.concat(extracted.excluded),
+      errors: [],
+      notice: 'この同期データは案件単位の見積です。品目別の分割管理には未対応です。',
+      confirmation: '税区分と送料条件を確認してから採用してください。',
+      supplierEstimates: buildSupplierEstimateResponse_(destination, targetCaseId),
+    });
   } catch (e) {
     return apiError_(e.message);
   } finally {
@@ -746,7 +1096,7 @@ function buildSupplierEstimateSaveRecord_(sheet, map, caseId, normalized, existi
     '税区分': normalized.taxCategory,
     '送料区分': normalized.shippingCategory,
     '送料金額': normalized.shippingAmount === null ? '' : normalized.shippingAmount,
-    '納期': normalized.deliveryDate,
+    '納期': normalized.deliveryDate || (existing ? existing.deliveryDate : ''),
     'PDF URL': normalized.pdfUrl,
     '備考': normalized.note,
     '採用フラグ': existing ? existing.adopted : false,
@@ -790,6 +1140,9 @@ function api_adoptSupplierEstimate(caseId, estimateId) {
     const target = findSupplierEstimate_(sheet, estimateId);
     const targetCaseId = String(caseId).trim();
     if (!target || target.caseId !== targetCaseId) return apiError_('採用対象の業者見積が見つからないにゃん。');
+    if (isSupplierResearchAdoptionBlocked_(target)) {
+      return apiError_('仕入先調査から取り込んだ見積は、税区分と送料条件を確認してから採用してほしいにゃん。');
+    }
     const estimates = getSupplierEstimateRows_(sheet, caseId);
     const taxRate = getSupplierEstimateTaxRate_();
     const plan = buildSupplierEstimateAdoptionPlan_(estimates, estimateId, taxRate, new Date());
@@ -798,6 +1151,8 @@ function api_adoptSupplierEstimate(caseId, estimateId) {
       applySupplierEstimateAdoptionPlan_(sheet, map, plan);
       SpreadsheetApp.flush();
       verifySupplierEstimateAdoption_(sheet, targetCaseId, estimateId);
+      syncSupplierEstimateSummaryToCaseSheet_(ss, targetCaseId);
+      SpreadsheetApp.flush();
     } catch (writeError) {
       rollbackSupplierEstimateAdoption_(sheet, map, snapshots);
       throw writeError;
@@ -882,16 +1237,43 @@ function testSupplierEstimatePureFunctions() {
     shippingCategory: '送料別', shippingAmount: null,
   }, 0.10);
   assert(!missing.confirmed && missing.warning.indexOf('送料未入力') >= 0, '送料未入力は未確定');
+  const includedNormalized = normalizeSupplierEstimate_({
+    supplierName: 'A社', quoteAmount: '1000', taxCategory: '税抜',
+    shippingCategory: '送料込み', shippingAmount: '',
+  });
+  assert(includedNormalized.shippingAmount === 0, '送料込みは空欄でも0円として正規化');
+  let separateShippingRejected = false;
+  try {
+    normalizeSupplierEstimate_({
+      supplierName: 'A社', quoteAmount: '1000', taxCategory: '税抜',
+      shippingCategory: '送料別', shippingAmount: '',
+    });
+  } catch (e) {
+    separateShippingRejected = String(e.message).indexOf('送料金額') >= 0;
+  }
+  assert(separateShippingRejected, '送料別の送料金額空欄を拒否');
   const unknown = calculateSupplierEstimateCost_({
     quoteAmount: 100000, taxCategory: '税抜',
     shippingCategory: '不明', shippingAmount: null,
   }, 0.10);
   assert(!unknown.confirmed, '送料不明は未確定');
+  const taxUnknown = calculateSupplierEstimateCost_({
+    quoteAmount: 100000, taxCategory: '未確認',
+    shippingCategory: '不明', shippingAmount: null,
+  }, 0.10);
+  assert(!taxUnknown.confirmed && taxUnknown.warning.indexOf('税区分未確認') >= 0, '税区分未確認は未確定');
   const summary = buildSupplierEstimateSummary_('CASE-1', 235000, [{
     adopted: true, costStatus: '確定', adoptedCostTaxExclusive: 184500,
   }]);
   assert(summary.expectedProfit === 50500, '想定利益');
   assert(summary.expectedProfitRate === 21.5, '想定利益率');
+  const projection = buildSupplierEstimateCaseProjection_(summary);
+  assert(projection.cost === 184500, '案件管理へ採用原価を投影');
+  assert(projection.profit === 50500, '案件管理へ想定利益を投影');
+  assert(projection.profitRate === 0.215, '案件管理へ利益率を小数で投影');
+  const incompleteProjection = buildSupplierEstimateCaseProjection_({ status: 'incomplete' });
+  assert(incompleteProjection.cost === '' && incompleteProjection.profit === '' &&
+    incompleteProjection.profitRate === '', '未確定サマリーは案件管理を空欄化');
   assert(buildSupplierEstimateSummary_('CASE-1', '', []).status === 'incomplete', '想定入札額・採用見積なし');
   assert(buildSupplierEstimateSummary_('CASE-1', 100000, [
     { adopted: true, costStatus: '確定', adoptedCostTaxExclusive: 50000 },
@@ -939,6 +1321,22 @@ function testSupplierEstimatePureFunctions() {
   assert(requestNormalized.idempotencyKey === 'OCR-REQUEST-1', 'requestIdを冪等キーとして正規化');
   assert(requestNormalized.itemId === 'ITEM-1', '品目IDを正規化');
   assert(requestNormalized.supplierId === 'SUP-1', '仕入先IDを正規化');
+  const preservedDeliveryRecord = buildSupplierEstimateSaveRecord_(
+    { getRange: () => ({ getValue: () => new Date(0) }) },
+    { '登録日時': 1 },
+    'CASE-1',
+    {
+      itemId: '', supplierId: '', supplierName: 'A社', quoteAmount: 1000,
+      taxCategory: '税抜', shippingCategory: '送料込み', shippingAmount: 0,
+      deliveryDate: '', pdfUrl: '', note: '', idempotencyKey: '',
+    },
+    {
+      estimateId: 'EST-1', itemId: '', supplierId: '', adopted: false,
+      idempotencyKey: '', deliveryDate: '対応可', rowNumber: 2,
+    },
+    new Date(1)
+  );
+  assert(preservedDeliveryRecord['納期'] === '対応可', '編集時の納期空欄送信は既存値を維持');
   const adoptionResult = buildSupplierEstimateAdoptionResult_('CASE-1', 'ITEM-1', [{
     caseId: 'CASE-1', itemId: 'ITEM-1', estimateId: 'EST-1',
     supplierId: 'SUP-1', supplierName: 'A社', adopted: true,
@@ -947,6 +1345,83 @@ function testSupplierEstimatePureFunctions() {
   assert(adoptionResult.adoptedEstimateId === 'EST-1', '採用見積ID DTO');
   assert(adoptionResult.adoptedSupplierId === 'SUP-1', '採用仕入先ID DTO');
   assert(adoptionResult.adoptedCostTaxExclusive === 100000, '採用原価 DTO');
+  assert(parseSupplierResearchAmount_('￥１２３，４５６円') === 123456, '同期金額の全角・記号正規化');
+  assert(parseSupplierResearchAmount_('不明') === null, '同期金額の不正値除外');
+  assert(
+    buildSupplierResearchIdempotencyKey_(' CASE-1 ', 'ノベルティ', 'Ａ社　東京') ===
+      buildSupplierResearchIdempotencyKey_('case-1', 'ノベルティ', 'a社 東京'),
+    '同期冪等キーの空白・英字・全半角正規化'
+  );
+  const syncBlock = buildSupplierResearchNoteBlock_({
+    category: 'ノベルティ', contact: '担当者', phone: '00-0000',
+    email: '', credit: '可', note: '元メモ',
+  }, '請求書払い');
+  const firstNote = replaceSupplierResearchNoteBlock_('手入力メモ', syncBlock);
+  const secondNote = replaceSupplierResearchNoteBlock_(firstNote, syncBlock);
+  assert(firstNote === secondNote, '同期備考が再同期で増殖しない');
+  const incoming = [{
+    caseId: 'CASE-1', supplierName: 'A社', quoteAmount: 1000,
+    deliveryDate: '対応可', noteBlock: syncBlock,
+    idempotencyKey: 'SUPPLIER_RESEARCH:case-1:cat:a社',
+  }];
+  const unchangedPlan = buildSupplierResearchSyncPlan_(incoming, [{
+    rowNumber: 2, estimateId: 'EST-1', supplierName: 'A社', quoteAmount: 1000,
+    deliveryDate: '対応可', note: syncBlock, adopted: false,
+    idempotencyKey: incoming[0].idempotencyKey,
+  }]);
+  assert(unchangedPlan.unchanged.length === 1 && unchangedPlan.inserts.length === 0, '同一データ再同期は変更なし');
+  const updatePlan = buildSupplierResearchSyncPlan_([
+    Object.assign({}, incoming[0], { quoteAmount: 2000 }),
+  ], [{
+    rowNumber: 2, estimateId: 'EST-1', supplierName: 'A社', quoteAmount: 1000,
+    deliveryDate: '対応可', note: syncBlock, adopted: false,
+    idempotencyKey: incoming[0].idempotencyKey,
+  }]);
+  assert(updatePlan.updates.length === 1 && updatePlan.updates[0].existing.estimateId === 'EST-1', '未採用行は同じ見積IDで更新');
+  const protectedPlan = buildSupplierResearchSyncPlan_([
+    Object.assign({}, incoming[0], { quoteAmount: 3000 }),
+  ], [{
+    rowNumber: 2, estimateId: 'EST-1', supplierName: 'A社', quoteAmount: 1000,
+    deliveryDate: '対応可', note: syncBlock, adopted: true,
+    idempotencyKey: incoming[0].idempotencyKey,
+  }]);
+  assert(protectedPlan.adoptedSkipped.length === 1 && protectedPlan.updates.length === 0, '採用済み行を保護');
+  assert(!isSupplierResearchAdoptionBlocked_({
+    idempotencyKey: '', taxCategory: '税抜', shippingCategory: '不明',
+  }), '既存手入力行は送料不明でも同期由来の採用制限を受けない');
+  assert(isSupplierResearchAdoptionBlocked_({
+    idempotencyKey: 'SUPPLIER_RESEARCH:case-1:cat:a社',
+    taxCategory: '未確認', shippingCategory: '送料込み',
+  }), '同期行は税区分未確認なら採用不可');
+  assert(isSupplierResearchAdoptionBlocked_({
+    idempotencyKey: 'SUPPLIER_RESEARCH:case-1:cat:a社',
+    taxCategory: '税抜', shippingCategory: '不明',
+  }), '同期行は送料区分不明なら採用不可');
+  assert(!isSupplierResearchAdoptionBlocked_({
+    idempotencyKey: 'SUPPLIER_RESEARCH:case-1:cat:a社',
+    taxCategory: '税抜', shippingCategory: '送料込み',
+  }), '同期行も税・送料確認後は採用可能');
+  assert(
+    updatePlan.updates[0].values.taxCategory === undefined &&
+      updatePlan.updates[0].values.shippingCategory === undefined,
+    '再同期計画は手動確定した税・送料を変更しない'
+  );
+  const extracted = extractSupplierResearchRows_([
+    ['案件ID', '案件カテゴリ', '会社名', '見積取得', '概算金額'],
+    ['CASE-1', 'カテゴリ', 'A社', true, '1,000'],
+    ['CASE-1', 'カテゴリ', 'B社', false, '2,000'],
+    ['CASE-2', 'カテゴリ', 'C社', true, '3,000'],
+    ['CASE-1', 'カテゴリ', 'D社', true, '不明'],
+  ], 'CASE-1', {});
+  assert(extracted.rows.length === 1 && extracted.rows[0].supplierName === 'A社', '対象案件・取得済み・有効金額だけ抽出');
+  assert(extracted.excluded.length === 2, 'FALSEと不正金額の除外理由を返す');
+  let missingHeaderRejected = false;
+  try {
+    extractSupplierResearchRows_([['案件ID', '会社名']], 'CASE-1', {});
+  } catch (e) {
+    missingHeaderRejected = String(e.message).indexOf('必須列') >= 0;
+  }
+  assert(missingHeaderRejected, '必須ヘッダー不足は書込計画前に拒否');
   return { success: true, tested: tested };
 }
 
