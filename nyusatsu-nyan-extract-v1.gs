@@ -2904,10 +2904,18 @@ function phase2PayloadToOcrResult_(clean, docs) {
     qualification: clean.basic.qualification.value,
     items: (clean.items || []).map(function(item) {
       return {
+        itemId: item.itemId || '',
         name: item.name || '',
         specification: item.specification || '',
+        manufacturer: item.manufacturer || item.maker || '',
+        brand: item.brand || '',
+        modelNumber: item.modelNumber || item.model || item.partNumber || '',
         quantity: item.quantity || '',
-        unit: item.unit || ''
+        unit: item.unit || '',
+        equivalentAllowed:
+          typeof item.equivalentAllowed === 'boolean'
+            ? item.equivalentAllowed
+            : null
       };
     }),
     itemName: firstItem.name || '',

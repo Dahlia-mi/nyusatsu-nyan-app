@@ -30,10 +30,12 @@ const NYAN_VERSION = "0.9.1";
 
 /* =====================================================================
  *  [Phase2.3] 案件JSONスキーマ v1
- *  JSONを唯一の正本とし、Web画面・スプレッドシート・見積書は
- *  この構造から描画／登録する。キー名は原則として今後変更しない。
+ *  JSONはOCR・CSV・手入力を受ける共通スキーマとして維持する。
+ *  正式登録後の品目SSOTは「案件品目DB」とし、case.jsonと
+ *  01_案件管理は既存互換のスナップショット／投影として扱う。
+ *  キー名は原則として今後変更しない。
  * ===================================================================== */
-const NYAN_CASE_SCHEMA_VERSION = '1.0.0';
+const NYAN_CASE_SCHEMA_VERSION = '1.1.0';
 
 const NYAN_CASE_TEMPLATE = {
   schemaVersion: NYAN_CASE_SCHEMA_VERSION,
@@ -48,10 +50,15 @@ const NYAN_CASE_TEMPLATE = {
 
   items: [
     {
+      itemId: '',
       name: '',
       specification: '',
+      manufacturer: '',
+      brand: '',
+      modelNumber: '',
       quantity: '',
-      unit: ''
+      unit: '',
+      equivalentAllowed: null
     }
   ],
 
@@ -127,13 +134,28 @@ function normalizeCaseJson_(input) {
   out.qualification= String(input.qualification || '').trim();
 
   const srcItems = Array.isArray(input.items) ? input.items : [];
+  const inputEquivalentProduct = input.equivalentProduct || {};
+  const defaultEquivalentAllowed =
+    typeof inputEquivalentProduct.allowed === 'boolean'
+      ? inputEquivalentProduct.allowed
+      : null;
   out.items = srcItems.length ? srcItems.map(function(item){
     item = item || {};
     return {
+      itemId: String(item.itemId || '').trim(),
       name: String(item.name || item.itemName || '').trim(),
       specification: String(item.specification || item.spec || '').trim(),
+      manufacturer: String(item.manufacturer || item.maker || '').trim(),
+      brand: String(item.brand || '').trim(),
+      modelNumber: String(
+        item.modelNumber || item.model || item.partNumber || ''
+      ).trim(),
       quantity: item.quantity == null ? '' : item.quantity,
-      unit: String(item.unit || '').trim()
+      unit: String(item.unit || '').trim(),
+      equivalentAllowed:
+        typeof item.equivalentAllowed === 'boolean'
+          ? item.equivalentAllowed
+          : defaultEquivalentAllowed
     };
   }) : JSON.parse(JSON.stringify(NYAN_CASE_TEMPLATE.items));
 
@@ -257,10 +279,19 @@ function buildCaseJsonFromOcrResult_(ocrResult, fileMeta) {
       ? ocrResult.items.map(function(item) {
           item = item || {};
           return {
+            itemId: item.itemId || '',
             name: item.name || item.itemName || '',
             specification: item.specification || item.spec || '',
+            manufacturer: item.manufacturer || item.maker || '',
+            brand: item.brand || '',
+            modelNumber:
+              item.modelNumber || item.model || item.partNumber || '',
             quantity: item.quantity != null ? item.quantity : '',
-            unit: item.unit || ''
+            unit: item.unit || '',
+            equivalentAllowed:
+              typeof item.equivalentAllowed === 'boolean'
+                ? item.equivalentAllowed
+                : null
           };
         })
       : [{
@@ -359,6 +390,28 @@ function registerCaseJsonToProject_(caseJson, sourceOverride, assetMeta) {
   data.audit.updatedAt = new Date().toISOString();
 
   try {
+    // 案件品目DBを品目の正本とし、発行済み品目IDをcase.jsonへも保持する。
+    // 01_案件管理の先頭品目投影は既存互換のため継続する。
+    const itemSync = upsertCaseItemsFromCaseJson_(
+      SpreadsheetApp.getActiveSpreadsheet(),
+      data,
+      {
+        updateSource: CASE_ITEMS_DB_UPDATE_SOURCE,
+        // 既存案件への取得元追加は部分情報の可能性があるため、
+        // 未記載品目を無効化せず、内容一致した品目だけ統合する。
+        deactivateMissing: result.isNew,
+        allowPositionMatch: result.isNew
+      }
+    );
+    data.items = itemSync.items;
+    result.caseItems = {
+      sheetName: itemSync.sheetName,
+      added: itemSync.added,
+      updated: itemSync.updated,
+      unchanged: itemSync.unchanged,
+      deactivated: itemSync.deactivated
+    };
+
     const saved = saveCaseAssets_(data, assetMeta || {});
     data.source = saved.source;
     result.folderId = data.source.folderId;
@@ -371,7 +424,22 @@ function registerCaseJsonToProject_(caseJson, sourceOverride, assetMeta) {
 
     return { caseJson: data, payload: payload, registration: result };
   } catch (e) {
-    if (result.isNew) rollbackNewProject_(result.projectId, payload.source, payload.sourceId, result.folderId);
+    if (result.isNew) {
+      try {
+        deleteCaseItemsByCaseId_(
+          SpreadsheetApp.getActiveSpreadsheet(),
+          result.projectId
+        );
+      } catch (itemRollbackError) {
+        Logger.log('案件品目DBロールバック警告: ' + itemRollbackError.message);
+      }
+      rollbackNewProject_(
+        result.projectId,
+        payload.source,
+        payload.sourceId,
+        result.folderId
+      );
+    }
     const failureMessage = result.isNew
       ? '案件資産の保存に失敗したため、新規登録を取り消しました'
       : '案件資産の保存に失敗したため、既存案件への統合を完了できませんでした';
@@ -656,6 +724,7 @@ function testCaseAssetPersistence() {
 const NYAN_SHEETS = {
   PROJECT:      '案件マスター',
   CASE_MANAGEMENT: '01_案件管理', // 実運用・Webアプリ表示用。案件マスターから安全に同期する
+  CASE_ITEMS:   '案件品目DB', // 複数品目の正本。案件ID×品目IDで管理する
   SOURCE_LINK:  '取得元リンク',
   SOURCE_MASTER:'情報源マスター',
   SUPPLIER:     '仕入先DB',
@@ -727,6 +796,7 @@ function setupNyanOS() {
 
   const proj = ensureSheetWithHeader_(ss, NYAN_SHEETS.PROJECT, PROJECT_HEADERS);
   ensureSheetWithHeader_(ss, NYAN_SHEETS.SOURCE_LINK, SOURCE_LINK_HEADERS);
+  ensureCaseItemsSheet_(ss);
   hideSystemColumns_(proj); // システム列を非表示に
 
   [
@@ -743,12 +813,20 @@ function setupNyanOS() {
 /* テストデータをまっさらにして作り直したいとき用（本番前だけ推奨） */
 function resetNyanOS() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  [NYAN_SHEETS.PROJECT, NYAN_SHEETS.SOURCE_LINK].forEach(function(name){
+  [
+    NYAN_SHEETS.PROJECT,
+    NYAN_SHEETS.SOURCE_LINK,
+    NYAN_SHEETS.CASE_ITEMS
+  ].forEach(function(name){
     const sh = ss.getSheetByName(name);
     if (sh) sh.clear();
   });
   setupNyanOS();
-  SpreadsheetApp.getActive().toast('案件マスター/取得元リンクを初期化しました 🧹', 'reset', 5);
+  SpreadsheetApp.getActive().toast(
+    '案件マスター/取得元リンク/案件品目DBを初期化しました 🧹',
+    'reset',
+    5
+  );
 }
 
 function ensureSheetWithHeader_(ss, name, headers) {
