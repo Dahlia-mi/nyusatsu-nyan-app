@@ -10,9 +10,13 @@ const CASE_ITEMS_DB_HEADERS = Object.freeze([
   '案件ID',
   '品目ID',
   '品目名',
-  '仕様・型番',
+  '仕様',
+  'メーカー',
+  'ブランド',
+  '型番',
   '数量',
   '単位',
+  '同等品可',
   '表示順',
   '有効フラグ',
   '作成日時',
@@ -97,6 +101,18 @@ function normalizeCaseItemQuantity_(value) {
   return text;
 }
 
+function normalizeCaseItemBoolean_(value) {
+  if (value === true || value === false) return value;
+  const text = normalizeCaseItemText_(value).toLowerCase();
+  if (['true', '1', 'yes', '可', '可能', '○'].indexOf(text) !== -1) {
+    return true;
+  }
+  if (['false', '0', 'no', '不可', '不可等', '×'].indexOf(text) !== -1) {
+    return false;
+  }
+  return '';
+}
+
 function normalizeCaseItem_(item, displayOrder) {
   item = item || {};
   return {
@@ -104,8 +120,18 @@ function normalizeCaseItem_(item, displayOrder) {
     itemId: normalizeCaseItemText_(item.itemId),
     name: normalizeCaseItemText_(item.name || item.itemName),
     specification: normalizeCaseItemText_(item.specification || item.spec),
+    manufacturer: normalizeCaseItemText_(item.manufacturer || item.maker),
+    brand: normalizeCaseItemText_(item.brand),
+    modelNumber: normalizeCaseItemText_(
+      item.modelNumber || item.model || item.partNumber
+    ),
     quantity: normalizeCaseItemQuantity_(item.quantity),
     unit: normalizeCaseItemText_(item.unit),
+    equivalentAllowed: normalizeCaseItemBoolean_(
+      item.equivalentAllowed !== undefined
+        ? item.equivalentAllowed
+        : item.equivalentProductAllowed
+    ),
     displayOrder: Number(displayOrder || item.displayOrder || 0),
     active: item.active === false ? false : true,
     createdAt: item.createdAt || '',
@@ -127,6 +153,13 @@ function caseItemFingerprint_(item) {
 function hasSameCaseItemContent_(left, right) {
   return (
     caseItemFingerprint_(left) === caseItemFingerprint_(right) &&
+    normalizeCaseItemText_(left.manufacturer) ===
+      normalizeCaseItemText_(right.manufacturer) &&
+    normalizeCaseItemText_(left.brand) === normalizeCaseItemText_(right.brand) &&
+    normalizeCaseItemText_(left.modelNumber) ===
+      normalizeCaseItemText_(right.modelNumber) &&
+    normalizeCaseItemBoolean_(left.equivalentAllowed) ===
+      normalizeCaseItemBoolean_(right.equivalentAllowed) &&
     Number(left.displayOrder || 0) === Number(right.displayOrder || 0) &&
     left.active !== false &&
     right.active !== false
@@ -267,8 +300,12 @@ function buildCaseItemUpsertPlan_(
       itemId: itemId,
       name: incoming.name,
       specification: incoming.specification,
+      manufacturer: incoming.manufacturer,
+      brand: incoming.brand,
+      modelNumber: incoming.modelNumber,
       quantity: incoming.quantity,
       unit: incoming.unit,
+      equivalentAllowed: incoming.equivalentAllowed,
       displayOrder: incoming.displayOrder,
       active: true,
       createdAt: matched && matched.createdAt ? matched.createdAt : timestamp,
@@ -286,8 +323,12 @@ function buildCaseItemUpsertPlan_(
       itemId: item.itemId,
       name: item.name,
       specification: item.specification,
+      manufacturer: item.manufacturer,
+      brand: item.brand,
+      modelNumber: item.modelNumber,
       quantity: item.quantity,
       unit: item.unit,
+      equivalentAllowed: item.equivalentAllowed,
       displayOrder: item.displayOrder,
       active: false,
       createdAt: item.createdAt || timestamp,
@@ -308,31 +349,72 @@ function buildCaseItemUpsertPlan_(
   };
 }
 
-function readCaseItemRows_(sheet, headerMap, caseId) {
+function groupContiguousCaseItemRows_(rowNumbers) {
+  const sorted = (rowNumbers || []).slice().sort(function(a, b) {
+    return a - b;
+  });
+  const groups = [];
+  sorted.forEach(function(row) {
+    const current = groups.length ? groups[groups.length - 1] : null;
+    if (current && current.startRow + current.rowCount === row) {
+      current.rowCount++;
+    } else {
+      groups.push({ startRow: row, rowCount: 1 });
+    }
+  });
+  return groups;
+}
+
+function findCaseItemRowNumbers_(sheet, headerMap, caseId) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
 
+  const caseIdColumn = headerMap['案件ID'] + 1;
+  return sheet
+    .getRange(2, caseIdColumn, lastRow - 1, 1)
+    .createTextFinder(caseId)
+    .matchEntireCell(true)
+    .matchCase(true)
+    .findAll()
+    .map(function(range) {
+      return range.getRow();
+    });
+}
+
+function readCaseItemRows_(sheet, headerMap, caseId) {
   const lastColumn = sheet.getLastColumn();
-  const rows = sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues();
-  return rows.map(function(values, index) {
-    return {
-      row: index + 2,
-      values: values,
-      caseId: normalizeCaseItemText_(values[headerMap['案件ID']]),
-      itemId: normalizeCaseItemText_(values[headerMap['品目ID']]),
-      name: normalizeCaseItemText_(values[headerMap['品目名']]),
-      specification: normalizeCaseItemText_(values[headerMap['仕様・型番']]),
-      quantity: values[headerMap['数量']],
-      unit: normalizeCaseItemText_(values[headerMap['単位']]),
-      displayOrder: Number(values[headerMap['表示順']] || 0),
-      active: values[headerMap['有効フラグ']] !== false,
-      createdAt: values[headerMap['作成日時']],
-      updatedAt: values[headerMap['更新日時']],
-      updateSource: normalizeCaseItemText_(values[headerMap['更新元']])
-    };
-  }).filter(function(item) {
-    return item.caseId === caseId && item.itemId;
+  const rowNumbers = findCaseItemRowNumbers_(sheet, headerMap, caseId);
+  const items = [];
+  groupContiguousCaseItemRows_(rowNumbers).forEach(function(group) {
+    const rows = sheet
+      .getRange(group.startRow, 1, group.rowCount, lastColumn)
+      .getValues();
+    rows.forEach(function(values, index) {
+      const item = {
+        row: group.startRow + index,
+        values: values,
+        caseId: normalizeCaseItemText_(values[headerMap['案件ID']]),
+        itemId: normalizeCaseItemText_(values[headerMap['品目ID']]),
+        name: normalizeCaseItemText_(values[headerMap['品目名']]),
+        specification: normalizeCaseItemText_(values[headerMap['仕様']]),
+        manufacturer: normalizeCaseItemText_(values[headerMap['メーカー']]),
+        brand: normalizeCaseItemText_(values[headerMap['ブランド']]),
+        modelNumber: normalizeCaseItemText_(values[headerMap['型番']]),
+        quantity: values[headerMap['数量']],
+        unit: normalizeCaseItemText_(values[headerMap['単位']]),
+        equivalentAllowed: normalizeCaseItemBoolean_(
+          values[headerMap['同等品可']]
+        ),
+        displayOrder: Number(values[headerMap['表示順']] || 0),
+        active: values[headerMap['有効フラグ']] !== false,
+        createdAt: values[headerMap['作成日時']],
+        updatedAt: values[headerMap['更新日時']],
+        updateSource: normalizeCaseItemText_(values[headerMap['更新元']])
+      };
+      if (item.caseId === caseId && item.itemId) items.push(item);
+    });
   });
+  return items;
 }
 
 function writeCaseItemRecordToValues_(record, values, headerMap) {
@@ -340,9 +422,13 @@ function writeCaseItemRecordToValues_(record, values, headerMap) {
   rowValues[headerMap['案件ID']] = record.caseId;
   rowValues[headerMap['品目ID']] = record.itemId;
   rowValues[headerMap['品目名']] = record.name;
-  rowValues[headerMap['仕様・型番']] = record.specification;
+  rowValues[headerMap['仕様']] = record.specification;
+  rowValues[headerMap['メーカー']] = record.manufacturer;
+  rowValues[headerMap['ブランド']] = record.brand;
+  rowValues[headerMap['型番']] = record.modelNumber;
   rowValues[headerMap['数量']] = record.quantity;
   rowValues[headerMap['単位']] = record.unit;
+  rowValues[headerMap['同等品可']] = record.equivalentAllowed;
   rowValues[headerMap['表示順']] = record.displayOrder;
   rowValues[headerMap['有効フラグ']] = record.active;
   rowValues[headerMap['作成日時']] = record.createdAt;
@@ -446,8 +532,13 @@ function upsertCaseItemsFromCaseJson_(ss, caseJson, options) {
           itemId: item.itemId,
           name: item.name,
           specification: item.specification,
+          manufacturer: item.manufacturer,
+          brand: item.brand,
+          modelNumber: item.modelNumber,
           quantity: item.quantity,
-          unit: item.unit
+          unit: item.unit,
+          equivalentAllowed:
+            item.equivalentAllowed === '' ? null : item.equivalentAllowed
         };
       }),
       added: plan.added,
@@ -491,18 +582,15 @@ function deleteCaseItemsByCaseId_(ss, caseId) {
     const headerMap = buildCaseItemsHeaderMap_(headers);
     if (!Object.prototype.hasOwnProperty.call(headerMap, '案件ID')) return 0;
 
-    const ids = sheet.getRange(
-      2,
-      headerMap['案件ID'] + 1,
-      sheet.getLastRow() - 1,
-      1
-    ).getValues();
+    const rowNumbers = findCaseItemRowNumbers_(
+      sheet,
+      headerMap,
+      normalizedCaseId
+    );
     let deleted = 0;
-    for (let i = ids.length - 1; i >= 0; i--) {
-      if (normalizeCaseItemText_(ids[i][0]) === normalizedCaseId) {
-        sheet.deleteRow(i + 2);
-        deleted++;
-      }
+    for (let i = rowNumbers.length - 1; i >= 0; i--) {
+      sheet.deleteRow(rowNumbers[i]);
+      deleted++;
     }
     return deleted;
   } finally {

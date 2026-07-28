@@ -53,8 +53,12 @@ const NYAN_CASE_TEMPLATE = {
       itemId: '',
       name: '',
       specification: '',
+      manufacturer: '',
+      brand: '',
+      modelNumber: '',
       quantity: '',
-      unit: ''
+      unit: '',
+      equivalentAllowed: null
     }
   ],
 
@@ -130,14 +134,28 @@ function normalizeCaseJson_(input) {
   out.qualification= String(input.qualification || '').trim();
 
   const srcItems = Array.isArray(input.items) ? input.items : [];
+  const inputEquivalentProduct = input.equivalentProduct || {};
+  const defaultEquivalentAllowed =
+    typeof inputEquivalentProduct.allowed === 'boolean'
+      ? inputEquivalentProduct.allowed
+      : null;
   out.items = srcItems.length ? srcItems.map(function(item){
     item = item || {};
     return {
       itemId: String(item.itemId || '').trim(),
       name: String(item.name || item.itemName || '').trim(),
       specification: String(item.specification || item.spec || '').trim(),
+      manufacturer: String(item.manufacturer || item.maker || '').trim(),
+      brand: String(item.brand || '').trim(),
+      modelNumber: String(
+        item.modelNumber || item.model || item.partNumber || ''
+      ).trim(),
       quantity: item.quantity == null ? '' : item.quantity,
-      unit: String(item.unit || '').trim()
+      unit: String(item.unit || '').trim(),
+      equivalentAllowed:
+        typeof item.equivalentAllowed === 'boolean'
+          ? item.equivalentAllowed
+          : defaultEquivalentAllowed
     };
   }) : JSON.parse(JSON.stringify(NYAN_CASE_TEMPLATE.items));
 
@@ -264,8 +282,16 @@ function buildCaseJsonFromOcrResult_(ocrResult, fileMeta) {
             itemId: item.itemId || '',
             name: item.name || item.itemName || '',
             specification: item.specification || item.spec || '',
+            manufacturer: item.manufacturer || item.maker || '',
+            brand: item.brand || '',
+            modelNumber:
+              item.modelNumber || item.model || item.partNumber || '',
             quantity: item.quantity != null ? item.quantity : '',
-            unit: item.unit || ''
+            unit: item.unit || '',
+            equivalentAllowed:
+              typeof item.equivalentAllowed === 'boolean'
+                ? item.equivalentAllowed
+                : null
           };
         })
       : [{

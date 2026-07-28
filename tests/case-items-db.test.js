@@ -76,6 +76,51 @@ test('stores ordinary numeric quantities as numbers and preserves non-numeric te
   assert.equal(plan.activeRecords[1].quantity, '約3');
 });
 
+test('stores stable item facts separately from the free-text specification', () => {
+  const plan = buildPlan(
+    '2026-07-015',
+    [{
+      name: 'ノートPC',
+      specification: 'メモリ16GB以上',
+      manufacturer: 'Example製作所',
+      brand: 'Example Pro',
+      modelNumber: 'EX-100',
+      quantity: 2,
+      unit: '台',
+      equivalentAllowed: false
+    }],
+    [],
+    new Date('2026-07-28T00:00:00.000Z'),
+    '案件カルテ'
+  );
+
+  const item = plan.activeRecords[0];
+  assert.equal(item.specification, 'メモリ16GB以上');
+  assert.equal(item.manufacturer, 'Example製作所');
+  assert.equal(item.brand, 'Example Pro');
+  assert.equal(item.modelNumber, 'EX-100');
+  assert.equal(item.equivalentAllowed, false);
+});
+
+test('normalizes equivalent-product values to true, false, or unknown', () => {
+  const plan = buildPlan(
+    '2026-07-015',
+    [
+      { name: '品目A', equivalentAllowed: '可' },
+      { name: '品目B', equivalentAllowed: '不可' },
+      { name: '品目C', equivalentAllowed: '要確認' }
+    ],
+    [],
+    new Date('2026-07-28T00:00:00.000Z'),
+    '案件カルテ'
+  );
+
+  assert.deepEqual(
+    Array.from(plan.activeRecords, (item) => item.equivalentAllowed),
+    [true, false, '']
+  );
+});
+
 test('is idempotent for the same case and items', () => {
   const now = new Date('2026-07-28T00:00:00.000Z');
   const plan = buildPlan(
@@ -284,9 +329,13 @@ test('uses header names and includes lifecycle columns', () => {
     '案件ID',
     '品目ID',
     '品目名',
-    '仕様・型番',
+    '仕様',
+    'メーカー',
+    'ブランド',
+    '型番',
     '数量',
     '単位',
+    '同等品可',
     '表示順',
     '有効フラグ',
     '作成日時',
@@ -301,7 +350,11 @@ test('uses header names and includes lifecycle columns', () => {
     '品目ID',
     '数量',
     '単位',
-    '仕様・型番',
+    '仕様',
+    'メーカー',
+    'ブランド',
+    '型番',
+    '同等品可',
     '表示順',
     '有効フラグ',
     '作成日時',
@@ -313,6 +366,21 @@ test('uses header names and includes lifecycle columns', () => {
   assert.doesNotThrow(() => sandbox.assertCaseItemsHeaders_(map));
 });
 
+test('groups sparse matching rows for narrow batch reads', () => {
+  const groups = sandbox.groupContiguousCaseItemRows_([8, 2, 3, 10, 9, 20]);
+  assert.deepEqual(
+    Array.from(groups, (group) => ({
+      startRow: group.startRow,
+      rowCount: group.rowCount
+    })),
+    [
+      { startRow: 2, rowCount: 2 },
+      { startRow: 8, rowCount: 3 },
+      { startRow: 20, rowCount: 1 }
+    ]
+  );
+});
+
 test('Core keeps legacy projection and wires the item SSOT into registration', () => {
   const core = fs.readFileSync(path.join(projectRoot, 'Core.gs'), 'utf8');
 
@@ -321,6 +389,8 @@ test('Core keeps legacy projection and wires the item SSOT into registration', (
   assert.match(core, /data\.items = itemSync\.items/);
   assert.match(core, /ensureCaseItemsSheet_\(ss\)/);
   assert.match(core, /itemId: String\(item\.itemId \|\| ''\)\.trim\(\)/);
+  assert.match(core, /manufacturer: String\(item\.manufacturer/);
+  assert.match(core, /equivalentAllowed:/);
   assert.match(
     core,
     /NYAN_SHEETS\.SOURCE_LINK,\s+NYAN_SHEETS\.CASE_ITEMS/
