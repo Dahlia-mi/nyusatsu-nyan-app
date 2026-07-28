@@ -60,7 +60,7 @@ Phase1では、安全な利用者IDがまだ確定していないため、猫の
   "success": true,
   "data": {
     "application": "supplier-nyan",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "environment": "test",
     "status": "ok"
   },

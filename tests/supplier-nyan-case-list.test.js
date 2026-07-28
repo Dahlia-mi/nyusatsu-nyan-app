@@ -241,6 +241,9 @@ test('UI contains copy formatting, cat-name states, and mobile overflow guards',
   assert.match(html, /localStorage\.setItem/);
   assert.match(html, /あとで変更できます/);
   assert.match(html, /猫の名前を変更/);
+  assert.match(html, /environmentBadge/);
+  assert.match(html, />TEST<\/span>/);
+  assert.match(html, /context\.environment !== 'test'/);
   assert.match(html, /overflow-x:\s*hidden/);
   assert.match(html, /width:\s*min\(100%,\s*680px\)/);
   assert.match(html, /if \(value === true\) return '同等品可'/);

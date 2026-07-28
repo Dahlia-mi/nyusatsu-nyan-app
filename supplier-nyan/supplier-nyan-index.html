@@ -55,6 +55,19 @@
       font-size: 1.45rem;
     }
     .companion { margin: 2px 0 0; color: var(--muted); font-size: .84rem; }
+    .environment-badge {
+      display: inline-flex;
+      margin-left: 6px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: #fff0c7;
+      color: #8a4d22;
+      font-size: .68rem;
+      font-weight: 800;
+      letter-spacing: .08em;
+      vertical-align: middle;
+    }
+    .environment-badge[hidden] { display: none; }
     .icon-button {
       min-width: 44px;
       min-height: 44px;
@@ -207,7 +220,9 @@
       <div class="brand-row">
         <span class="cat-mark" aria-hidden="true">🐈</span>
         <div>
-          <h1 class="brand">仕入先にゃん</h1>
+          <h1 class="brand">仕入先にゃん
+            <span id="environmentBadge" class="environment-badge" hidden>TEST</span>
+          </h1>
           <p id="companionText" class="companion">仕入先を探そう</p>
         </div>
         <button id="settingsButton" class="icon-button" type="button"
@@ -518,6 +533,8 @@
 
       api('api_getAppContext').then(function (context) {
         state.environment = context.environment;
+        document.getElementById('environmentBadge').hidden =
+          context.environment !== 'test';
         state.catName = CatNameStorage.get();
         updateCompanion();
         if (!state.catName) openNameModal(true);
