@@ -580,7 +580,7 @@
           <label>税区分<select id="seTaxCategory"><option value="未確認">未確認</option><option value="税抜">税抜</option><option value="税込">税込</option></select></label>
           <label>送料区分<select id="seShippingCategory"><option value="送料込み">送料込み</option><option value="送料別">送料別</option><option value="不明">不明</option></select></label>
           <label>送料金額<input id="seShippingAmount" type="text" inputmode="decimal" autocomplete="off"></label>
-          <label>納期<input id="seDeliveryDate" type="date"></label>
+          <label>納期<input id="seDeliveryDate" type="text" maxlength="100" placeholder="対応可 / 2026/08/01"></label>
           <label class="wide">見積書PDF URL<input id="sePdfUrl" type="url" inputmode="url" autocomplete="url" placeholder="https://"></label>
           <label class="wide">備考<textarea id="seNote" maxlength="2000"></textarea></label>
         </div>
@@ -1359,6 +1359,7 @@ function editSupplierEstimate(estimateId) {
 function validateSupplierEstimateForm(payload) {
   if (!payload.supplierName) return '仕入先名を入力してください';
   if (!/^\d+(?:\.\d+)?$/.test(payload.quoteAmount) || Number(payload.quoteAmount) < 0) return '見積金額は0以上の数字で入力してください';
+  if (payload.shippingCategory === '送料別' && !payload.shippingAmount) return '送料別の場合は送料金額を入力してください';
   if (payload.shippingAmount && (!/^\d+(?:\.\d+)?$/.test(payload.shippingAmount) || Number(payload.shippingAmount) < 0)) return '送料金額は0以上の数字で入力してください';
   if (payload.pdfUrl && !/^https:\/\/[^\s"'<>]+$/i.test(payload.pdfUrl)) return 'PDF URLは https:// から始まるURLを入力してください';
   return '';
@@ -1372,7 +1373,9 @@ function saveSupplierEstimate() {
     quoteAmount: normalizeAmountInput($('seQuoteAmount').value),
     taxCategory: $('seTaxCategory').value,
     shippingCategory: $('seShippingCategory').value,
-    shippingAmount: normalizeAmountInput($('seShippingAmount').value),
+    shippingAmount: $('seShippingCategory').value === '送料込み'
+      ? '0'
+      : normalizeAmountInput($('seShippingAmount').value),
     deliveryDate: $('seDeliveryDate').value,
     pdfUrl: $('sePdfUrl').value.trim(),
     note: $('seNote').value.trim()
