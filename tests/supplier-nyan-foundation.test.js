@@ -89,7 +89,7 @@ test('returns a common success response from the health check', () => {
   assert.equal(result.success, true);
   assert.equal(result.error, null);
   assert.equal(result.data.application, 'supplier-nyan');
-  assert.equal(result.data.version, '0.2.0');
+  assert.equal(result.data.version, '0.3.0');
   assert.equal(result.data.environment, 'test');
   assert.equal(result.data.status, 'ok');
   assert.deepEqual(runtime.openedIds, [
@@ -104,7 +104,7 @@ test('serves the health check as JSON from doGet', () => {
     'supplier-test-id': '仕入先調査マスター テスト'
   });
 
-  const output = runtime.sandbox.doGet();
+  const output = runtime.sandbox.doGet({ parameter: { api: 'health' } });
   const result = JSON.parse(output.content);
 
   assert.equal(output.mimeType, 'application/json');
