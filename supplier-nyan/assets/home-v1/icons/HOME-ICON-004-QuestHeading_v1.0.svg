@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="今日のクエスト見出し"><defs>
+  <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff7e5"/><stop offset=".58" stop-color="#f0d6a8"/><stop offset="1" stop-color="#d5ad6e"/></linearGradient>
+  <linearGradient id="paperEdge" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff2d2"/><stop offset=".48" stop-color="#e6c18b"/><stop offset="1" stop-color="#b97b3f"/></linearGradient>
+  <linearGradient id="wood" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d99a43"/><stop offset=".5" stop-color="#a85e21"/><stop offset="1" stop-color="#663917"/></linearGradient>
+  <linearGradient id="woodLight" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#edb95d"/><stop offset=".55" stop-color="#ba742e"/><stop offset="1" stop-color="#7a431a"/></linearGradient>
+  <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffd56b"/><stop offset=".55" stop-color="#e69a25"/><stop offset="1" stop-color="#9c571a"/></linearGradient>
+  <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8fb456"/><stop offset=".55" stop-color="#648b3c"/><stop offset="1" stop-color="#3d612e"/></linearGradient>
+  <radialGradient id="lamp"><stop offset="0" stop-color="#fffbd1"/><stop offset=".48" stop-color="#ffd86d"/><stop offset="1" stop-color="#e18b21"/></radialGradient>
+  <filter id="shadow" x="-30%" y="-30%" width="160%" height="175%"><feDropShadow dx="0" dy="4" stdDeviation="3.2" flood-color="#2a170b" flood-opacity=".34"/></filter>
+  <filter id="smallShadow" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="2" stdDeviation="1.8" flood-color="#2a170b" flood-opacity=".3"/></filter>
+  <filter id="tinyGlow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3"/></filter>
+</defs><g filter="url(#smallShadow)" stroke="#4b2d1c" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M27 22h48c5 0 9 4 9 9v56c-8-5-16-5-25-1-11-6-21-5-32 2Z" fill="url(#woodLight)" stroke-width="5"/>
+  <path d="M36 35h32M36 48h23M36 61h17" fill="none" stroke="#6e441f" stroke-width="4" opacity=".78"/>
+  <circle cx="78" cy="77" r="20" fill="url(#paper)" stroke-width="5"/>
+  <path d="m92 92 19 19" fill="none" stroke-width="7"/>
+  <path d="M33 27h38" fill="none" stroke="#edbf6a" stroke-width="2" opacity=".7"/>
+</g></svg>

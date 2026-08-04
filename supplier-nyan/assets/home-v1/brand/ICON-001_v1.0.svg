@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">仕入先にゃん App Icon</title>
+  <desc id="desc">仕入先にゃんのPrimary Logoから展開した、緑の肉球紋章を中心に置くアプリアイコン</desc>
+  <defs>
+    <radialGradient id="forestBg" cx="36%" cy="26%" r="92%">
+      <stop offset="0" stop-color="#7fa654"/>
+      <stop offset=".48" stop-color="#5f843d"/>
+      <stop offset="1" stop-color="#365a28"/>
+    </radialGradient>
+    <radialGradient id="parchment" cx="38%" cy="30%" r="78%">
+      <stop offset="0" stop-color="#fff5df"/>
+      <stop offset=".62" stop-color="#f1dfbd"/>
+      <stop offset="1" stop-color="#d9bc8b"/>
+    </radialGradient>
+    <linearGradient id="pawFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#779c4d"/>
+      <stop offset="1" stop-color="#45672d"/>
+    </linearGradient>
+    <filter id="paperTexture" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency=".018 .11" numOctaves="2" seed="19" result="noise"/>
+      <feColorMatrix in="noise" type="saturate" values="0" result="grayNoise"/>
+      <feComponentTransfer in="grayNoise" result="softNoise">
+        <feFuncA type="table" tableValues="0 .11"/>
+      </feComponentTransfer>
+      <feBlend in="SourceGraphic" in2="softNoise" mode="multiply"/>
+    </filter>
+    <filter id="medallionShadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="30" stdDeviation="24" flood-color="#1f311b" flood-opacity=".43"/>
+    </filter>
+    <filter id="pawShadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="12" stdDeviation="9" flood-color="#253d1d" flood-opacity=".35"/>
+    </filter>
+  </defs>
+
+  <!-- App-store source stays square and opaque. The operating system applies the corner mask. -->
+  <rect width="1024" height="1024" fill="url(#forestBg)"/>
+  <rect width="1024" height="1024" fill="url(#forestBg)" filter="url(#paperTexture)" opacity=".45"/>
+
+  <!-- Soft, irregular light patches keep the forest mood without becoming a literal scene. -->
+  <g fill="#d8e6ad" opacity=".12">
+    <circle cx="134" cy="123" r="84"/>
+    <circle cx="247" cy="70" r="43"/>
+    <circle cx="903" cy="204" r="62"/>
+    <circle cx="850" cy="841" r="96"/>
+    <circle cx="134" cy="850" r="54"/>
+  </g>
+
+  <!-- The cream medallion matches AST-004 but is enlarged for small-screen recognition. -->
+  <g filter="url(#medallionShadow)">
+    <path d="M512 167
+             C699 167 852 317 852 511
+             C852 704 703 856 512 856
+             C321 856 171 704 171 511
+             C171 319 322 167 512 167Z"
+          fill="url(#parchment)" stroke="#6d4528" stroke-width="28"/>
+    <path d="M248 385C289 284 387 218 504 213"
+          fill="none" stroke="#fff8e9" stroke-width="18" stroke-linecap="round" opacity=".55"/>
+    <path d="M757 651C704 752 616 807 505 812"
+          fill="none" stroke="#b7905f" stroke-width="12" stroke-linecap="round" opacity=".26"/>
+  </g>
+
+  <!-- Paw enlarged and optically centered slightly lower than the geometric center. -->
+  <g id="paw" transform="translate(512 548) scale(2.55) translate(-152 -151)" filter="url(#pawShadow)">
+    <ellipse cx="151" cy="177" rx="62" ry="54" fill="url(#pawFill)" stroke="#355526" stroke-width="6"/>
+    <ellipse cx="79" cy="114" rx="30" ry="38" fill="url(#pawFill)" stroke="#355526" stroke-width="6" transform="rotate(-24 79 114)"/>
+    <ellipse cx="128" cy="79" rx="29" ry="39" fill="url(#pawFill)" stroke="#355526" stroke-width="6" transform="rotate(-8 128 79)"/>
+    <ellipse cx="181" cy="80" rx="29" ry="39" fill="url(#pawFill)" stroke="#355526" stroke-width="6" transform="rotate(10 181 80)"/>
+    <ellipse cx="226" cy="119" rx="30" ry="38" fill="url(#pawFill)" stroke="#355526" stroke-width="6" transform="rotate(25 226 119)"/>
+    <path d="M121 174C136 151 168 146 190 165"
+          fill="none" stroke="#a5bd7d" stroke-width="8" stroke-linecap="round" opacity=".58"/>
+  </g>
+</svg>

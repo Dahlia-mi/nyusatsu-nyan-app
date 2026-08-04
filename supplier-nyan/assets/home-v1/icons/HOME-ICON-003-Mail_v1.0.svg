@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="メール"><defs>
+  <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff7e5"/><stop offset=".58" stop-color="#f0d6a8"/><stop offset="1" stop-color="#d5ad6e"/></linearGradient>
+  <linearGradient id="paperEdge" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff2d2"/><stop offset=".48" stop-color="#e6c18b"/><stop offset="1" stop-color="#b97b3f"/></linearGradient>
+  <linearGradient id="wood" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d99a43"/><stop offset=".5" stop-color="#a85e21"/><stop offset="1" stop-color="#663917"/></linearGradient>
+  <linearGradient id="woodLight" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#edb95d"/><stop offset=".55" stop-color="#ba742e"/><stop offset="1" stop-color="#7a431a"/></linearGradient>
+  <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffd56b"/><stop offset=".55" stop-color="#e69a25"/><stop offset="1" stop-color="#9c571a"/></linearGradient>
+  <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8fb456"/><stop offset=".55" stop-color="#648b3c"/><stop offset="1" stop-color="#3d612e"/></linearGradient>
+  <radialGradient id="lamp"><stop offset="0" stop-color="#fffbd1"/><stop offset=".48" stop-color="#ffd86d"/><stop offset="1" stop-color="#e18b21"/></radialGradient>
+  <filter id="shadow" x="-30%" y="-30%" width="160%" height="175%"><feDropShadow dx="0" dy="4" stdDeviation="3.2" flood-color="#2a170b" flood-opacity=".34"/></filter>
+  <filter id="smallShadow" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="2" stdDeviation="1.8" flood-color="#2a170b" flood-opacity=".3"/></filter>
+  <filter id="tinyGlow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3"/></filter>
+</defs><g filter="url(#shadow)">
+  <circle cx="64" cy="64" r="53" fill="url(#paperEdge)" stroke="#70401f" stroke-width="3.5"/>
+  <circle cx="64" cy="64" r="46" fill="url(#paper)" stroke="#f8deb2" stroke-width="3"/>
+  <circle cx="64" cy="64" r="41.5" fill="none" stroke="#bd8147" stroke-width="1.8" opacity=".7"/>
+  <g filter="url(#smallShadow)" stroke="#4b2d1c" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="34" y="40" width="61" height="50" rx="7" fill="url(#paper)"/>
+  <path d="m38 46 26 23 27-23M39 85l19-21M90 85 70 64" fill="none"/>
+  <path d="M87 40c8-5 14-3 18 1-2 7-7 10-14 10" fill="url(#leaf)" stroke="#3e612d" stroke-width="3"/>
+</g>
+</g></svg>

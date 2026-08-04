@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6e7c8">
+  <title>仕入先にゃん｜Home Design Ver.1.4</title>
+  <link rel="stylesheet" href="./home-design-v1.css">
+  <link rel="stylesheet" href="./home-navigation-v1.css">
+</head>
+<body>
+  <div class="app-backdrop">
+    <div class="app-shell" id="appShell">
+      <header class="app-header" aria-label="仕入先にゃん ヘッダー">
+        <button class="header-icon-button brand-mark" type="button" aria-label="アプリ情報">
+          <img data-asset-key="brand.mark.paw" alt="">
+        </button>
+
+        <div class="header-actions" aria-label="お知らせ">
+          <button class="header-icon-button" type="button" aria-label="通知">
+            <img data-asset-key="header.notification" alt="">
+            <span class="unread-badge" id="notificationBadge" hidden></span>
+          </button>
+          <button class="header-icon-button" type="button" aria-label="メール">
+            <img data-asset-key="header.mail" alt="">
+            <span class="unread-badge" id="mailBadge" hidden></span>
+          </button>
+        </div>
+      </header>
+
+      <main class="home-main" id="homeScreen" data-screen="home">
+        <section class="hero-section" aria-label="今日の案内">
+          <img class="hero-background" data-asset-key="background.homeForest" alt="">
+          <img class="explorer-nyan" data-asset-key="character.explorerCat"
+            alt="今日の仕事を案内する探検にゃん">
+          <p class="daily-instruction" id="dailyInstruction"></p>
+        </section>
+
+        <section class="home-section" aria-labelledby="questHeading">
+          <article class="wood-card quest-board">
+            <div class="section-heading">
+              <img class="section-heading__icon" data-asset-key="home.heading.quest" alt="">
+              <h1 id="questHeading">今日のクエスト</h1>
+              <span class="section-heading__summary" id="questSummary"></span>
+            </div>
+            <div class="quest-list" id="questList"></div>
+          </article>
+        </section>
+
+        <section class="home-section" aria-labelledby="recentHeading">
+          <article class="wood-card recent-board">
+            <div class="section-heading">
+              <img class="section-heading__icon" data-asset-key="home.heading.recent" alt="">
+              <h2 id="recentHeading">最近届いた依頼</h2>
+            </div>
+            <div class="recent-list" id="recentList"></div>
+          </article>
+        </section>
+
+        <section class="home-section" aria-labelledby="statusHeading">
+          <article class="wood-card status-board">
+            <div class="section-heading">
+              <img class="section-heading__icon" data-asset-key="home.heading.status" alt="">
+              <h2 id="statusHeading">調査状況</h2>
+            </div>
+            <div id="statusBoard"></div>
+          </article>
+        </section>
+      </main>
+
+      <main class="prototype-screen" id="researchScreen" data-screen="research" hidden>
+        <header class="screen-header">
+          <button class="screen-back" type="button" data-history-back aria-label="Homeへ戻る">←</button>
+          <div>
+            <p class="screen-eyebrow">仕入先を探す</p>
+            <h1>調査一覧</h1>
+          </div>
+        </header>
+        <section class="screen-summary" aria-label="調査一覧の概要">
+          <strong>調査対象 3案件</strong>
+          <span>品目を選ぶと詳細を確認できます。</span>
+        </section>
+        <div class="case-list" id="caseList"></div>
+      </main>
+
+      <main class="prototype-screen" id="caseDetailScreen" data-screen="case-detail" hidden>
+        <header class="screen-header">
+          <button class="screen-back" type="button" data-history-back aria-label="調査一覧へ戻る">←</button>
+          <div>
+            <p class="screen-eyebrow">調査する品目を確認</p>
+            <h1 id="caseDetailTitle">案件詳細</h1>
+          </div>
+        </header>
+        <section class="case-detail-summary" id="caseDetailSummary"></section>
+        <section class="detail-items" aria-labelledby="detailItemsHeading">
+          <h2 id="detailItemsHeading">品目</h2>
+          <div id="detailItemList"></div>
+        </section>
+      </main>
+
+      <nav class="bottom-navigation" aria-label="主要メニュー" id="bottomNavigation">
+        <img class="nav-grass nav-grass--left" data-asset-key="decoration.grass.left" alt="">
+        <div class="nav-items" id="navItems"></div>
+        <img class="nav-grass nav-grass--right" data-asset-key="decoration.grass.right" alt="">
+      </nav>
+    </div>
+  </div>
+
+  <noscript>この画面を表示するにはJavaScriptを有効にしてください。</noscript>
+  <script src="./home-design-v1.js"></script>
+  <script src="./home-navigation-v1.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Crate normal">
+<defs>
+  <linearGradient id="wood" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b97a42"/><stop offset="1" stop-color="#704124"/></linearGradient>
+  <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#83a957"/><stop offset="1" stop-color="#496a2d"/></linearGradient>
+  <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff5df"/><stop offset="1" stop-color="#dfc495"/></linearGradient>
+  <radialGradient id="lamp"><stop offset="0" stop-color="#fff8c8"/><stop offset=".55" stop-color="#ffd56a"/><stop offset="1" stop-color="#e89535"/></radialGradient>
+  <filter id="shadow" x="-25%" y="-25%" width="150%" height="165%"><feDropShadow dx="0" dy="4" stdDeviation="3" flood-color="#2a1b12" flood-opacity=".35"/></filter>
+  <filter id="warmGlow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="6"/></filter>
+  <filter id="tinyGlow" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="3.5"/></filter>
+</defs>
+
+
+  <g filter="url(#shadow)" stroke="#4b2d1c" stroke-width="5" stroke-linejoin="round">
+    <path d="M20 43h88v64H20Z" fill="url(#wood)"/>
+    <path d="M18 34h92v19H18Z" fill="#a96d3b"/>
+    <path d="M28 60l72 38M100 60L28 98" fill="none" stroke="#8c572f" stroke-width="7"/>
+    <path d="M43 34v73M85 34v73" fill="none" stroke="#5c361f" stroke-width="5" opacity=".75"/>
+    <path d="M56 61c4-5 12-5 16 0 5-3 11 1 10 7-2 8-11 13-18 18-7-5-16-10-18-18-1-6 5-10 10-7Z" fill="#d6ad5c" stroke-width="3"/>
+  </g>
+</svg>
