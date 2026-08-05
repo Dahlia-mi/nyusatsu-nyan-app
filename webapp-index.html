@@ -42,6 +42,7 @@
   html, body { margin: 0; padding: 0; background: var(--paper); color: var(--ink);
     font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic", "Noto Sans JP", sans-serif;
     font-size: 16px; line-height: 1.55; }
+  html { scroll-padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 
   /* ── ヘッダー：モーヴ×プラムがブランドの署名 ── */
   header {
@@ -210,6 +211,98 @@
     text-decoration: none;
   }
   .hint { font-size: 12px; color: var(--ink-soft); margin-top: 10px; text-align: center; }
+
+  /* ── 標準見積書 Phase 1 / Step 3 ── */
+  .standard-estimate-entry { margin-top: 12px; }
+  .standard-estimate-summary {
+    margin-top: 16px; padding: 14px; border: 1px solid var(--line);
+    border-radius: var(--radius); background: var(--card);
+  }
+  .standard-estimate-summary h3, .standard-estimate-section h3 {
+    margin: 0 0 10px; color: var(--plum); font-size: 16px;
+  }
+  .standard-estimate-group { margin-top: 12px; }
+  .standard-estimate-history { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 9px; }
+  .standard-estimate-history summary { cursor: pointer; color: var(--mauve-deep); font-size: 13px; font-weight: 800; padding: 5px 0; }
+  .standard-estimate-group-title { color: var(--ink-soft); font-size: 12px; font-weight: 800; margin-bottom: 6px; }
+  .standard-estimate-row {
+    border-top: 1px solid var(--line); padding: 10px 0; display: grid;
+    grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: center;
+  }
+  .standard-estimate-row:first-child { border-top: 0; }
+  .standard-estimate-number { font-weight: 800; overflow-wrap: anywhere; }
+  .standard-estimate-meta { color: var(--ink-soft); font-size: 12px; }
+  .standard-estimate-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+  .standard-estimate-empty { color: var(--ink-soft); font-size: 13px; }
+  .standard-estimate-title { margin: 0 0 4px; font-size: 20px; }
+  .standard-estimate-subtitle { color: var(--ink-soft); font-size: 13px; margin-bottom: 14px; }
+  .standard-estimate-section {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 15px; margin-bottom: 12px;
+  }
+  .standard-warning-box {
+    display: none; background: #FFF7E8; border: 1px solid #E4BE79;
+    border-left: 4px solid #C58A34; border-radius: 10px; padding: 11px 12px;
+    margin-bottom: 12px; color: #76511C; font-size: 13px;
+  }
+  .standard-warning-box.show { display: block; }
+  .standard-warning-box strong { display: block; margin-bottom: 4px; }
+  .standard-warning-box ul { margin: 0; padding-left: 20px; }
+  .standard-tax-suggestion {
+    background: #F3F7FC; border-left: 3px solid #3973B7; border-radius: 8px;
+    padding: 9px 10px; margin-bottom: 12px; font-size: 12px;
+  }
+  .standard-candidate-note {
+    background: #FFF7E8; border: 1px solid #E4BE79; border-radius: 9px;
+    padding: 9px 10px; margin-bottom: 10px; font-size: 12px; color: #76511C;
+  }
+  .standard-item-card {
+    border: 1px solid var(--line); border-radius: 12px; padding: 13px;
+    margin-bottom: 11px; background: #fff;
+  }
+  .standard-item-card.is-candidate { border-color: #D6A94D; background: #FFFCF5; }
+  .standard-item-heading { display: flex; justify-content: space-between; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .standard-item-heading strong { font-size: 15px; }
+  .standard-item-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 9px; }
+  .standard-item-grid .wide { grid-column: 1 / -1; }
+  .standard-item-amount {
+    min-height: 45px; display: flex; align-items: center; justify-content: flex-end;
+    background: #F8F5F7; border-radius: 9px; padding: 10px 11px; font-weight: 800;
+  }
+  .standard-item-buttons { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 6px; margin-top: 10px; }
+  .standard-item-buttons button { min-height: 40px; padding: 7px 3px; }
+  .standard-totals { margin: 12px 0 0; }
+  .standard-total-row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 2px; border-top: 1px solid var(--line); }
+  .standard-total-row.final { font-size: 17px; font-weight: 800; color: var(--mauve-deep); }
+  .standard-business-card { background: #F8F5F7; border-radius: 10px; padding: 11px 12px; font-size: 13px; }
+  .standard-business-card div + div { margin-top: 3px; }
+  .standard-readonly { background: #F4F1F3; color: var(--ink-soft); }
+  .field-error { display: none; color: var(--err); font-size: 11px; margin-top: 4px; }
+  .field-error.show { display: block; }
+  .form-input.has-error, .form-textarea.has-error, .form-select.has-error { border-color: var(--err); background: #FFF8F7; }
+  #view-standard-estimate { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+  .standard-save-actions {
+    position: sticky; bottom: 0; z-index: 8; background: rgba(250,247,245,.96);
+    padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
+  }
+  .standard-estimate-back-flow { margin-top: 0; }
+  .standard-save-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .standard-pdf-result { display: none; }
+  .standard-pdf-result.show { display: block; }
+  .standard-pdf-result dl { margin: 0; display: grid; grid-template-columns: 90px 1fr; gap: 5px 9px; font-size: 13px; }
+  .standard-pdf-result dt { color: var(--ink-soft); }
+  .standard-pdf-result dd { margin: 0; overflow-wrap: anywhere; }
+  .standard-conflict {
+    display: none; background: #FFF0EE; border: 1px solid #E8B3AD; border-radius: 10px;
+    padding: 12px; margin-bottom: 12px; color: #8D312A; font-size: 13px;
+  }
+  .standard-conflict.show { display: block; }
+  .standard-conflict-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 9px; }
+  @media (max-width: 420px) {
+    .standard-item-grid { grid-template-columns: 1fr 92px; }
+    .standard-item-buttons { grid-template-columns: 1fr 1fr; }
+    .standard-estimate-row { grid-template-columns: 1fr; }
+  }
 
   /* ── 完了ビュー ── */
   .done-card {
@@ -518,6 +611,135 @@
     </div>
     <button class="btn-primary" id="btnGenerate" type="button">見積書を生成する</button>
     <div class="hint">対応表にテンプレート登録済みの発注機関のみ生成できます</div>
+    <button class="btn-secondary standard-estimate-entry" id="btnCreateStandardEstimate" type="button">標準見積書を作成</button>
+    <div class="standard-estimate-summary" id="standardEstimateSummary">
+      <h3>標準見積書</h3>
+      <div id="standardEstimateOverview" class="standard-estimate-empty">確認中…</div>
+    </div>
+  </section>
+
+  <!-- ── 標準見積書 Phase 1 / Step 3：編集専用ビュー ── -->
+  <section class="view" id="view-standard-estimate">
+    <a href="#" class="back-link" id="btnBackFromStandardEstimate">← 案件詳細へ戻る</a>
+    <h2 class="standard-estimate-title">標準見積書</h2>
+    <div class="standard-estimate-subtitle" id="standardEstimateCaseMeta">—</div>
+
+    <div class="standard-warning-box" id="standardEstimateWarnings" role="status"></div>
+    <div class="standard-conflict" id="standardEstimateConflict">
+      <strong>別の画面または端末で更新されています。</strong>
+      <div>自動上書きはしません。最新内容を読み直すか、現在の編集内容を確認してください。</div>
+      <div class="standard-conflict-actions">
+        <button class="btn-mini" id="btnReloadStandardEstimate" type="button">最新内容を読み直す</button>
+        <button class="btn-mini" id="btnKeepStandardEstimateEdits" type="button">編集内容を確認する</button>
+      </div>
+    </div>
+
+    <section class="standard-estimate-section">
+      <h3>基本情報</h3>
+      <div class="form-group">
+        <label class="form-label" for="standardEstimateNumber">見積番号</label>
+        <input class="form-input standard-readonly" id="standardEstimateNumber" readonly value="保存時に採番">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="standardEstimateDate">作成日</label>
+        <input class="form-input" id="standardEstimateDate" type="date">
+        <div class="field-error" id="standardEstimateDateError"></div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="standardEstimateAddressee">宛先</label>
+        <input class="form-input" id="standardEstimateAddressee">
+        <div class="field-error" id="standardEstimateAddresseeError"></div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="standardEstimateSubject">件名</label>
+        <input class="form-input" id="standardEstimateSubject">
+        <div class="field-error" id="standardEstimateSubjectError"></div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="standardEstimateDeliveryDate">納期</label>
+        <input class="form-input" id="standardEstimateDeliveryDate">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="standardEstimateDeliveryPlace">納品場所</label>
+        <textarea class="form-textarea" id="standardEstimateDeliveryPlace"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="standardEstimateValidity">見積有効期限</label>
+        <input class="form-input" id="standardEstimateValidity" placeholder="例：作成日から30日間">
+      </div>
+    </section>
+
+    <section class="standard-estimate-section">
+      <h3>明細</h3>
+      <div id="standardEstimateItems"></div>
+      <button class="btn-secondary" id="btnAddStandardEstimateItem" type="button">＋ 明細を追加</button>
+      <div class="field-error" id="standardEstimateItemsError"></div>
+    </section>
+
+    <section class="standard-estimate-section">
+      <h3>税・金額</h3>
+      <div class="standard-tax-suggestion" id="standardEstimateTaxSuggestion"></div>
+      <div class="form-group">
+        <label class="form-label" for="standardEstimateAmountDisplay">提出金額表示</label>
+        <select class="form-select" id="standardEstimateAmountDisplay">
+          <option value="exclusive">税抜</option><option value="inclusive">税込</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="standardEstimateTaxCategory">課税区分</label>
+        <select class="form-select" id="standardEstimateTaxCategory">
+          <option value="standard">標準税率</option>
+          <option value="reduced" disabled>軽減税率（今後対応）</option>
+          <option value="exempt">非課税</option><option value="out_of_scope">対象外</option>
+        </select>
+      </div>
+      <div class="standard-item-grid">
+        <div class="form-group">
+          <label class="form-label" for="standardEstimateTaxRate">税率</label>
+          <input class="form-input" id="standardEstimateTaxRate" type="number" min="0" max="1" step="0.01" inputmode="decimal">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="standardEstimateRoundingMode">端数処理</label>
+          <select class="form-select" id="standardEstimateRoundingMode">
+            <option value="round">四捨五入</option><option value="floor">切り捨て</option><option value="ceil">切り上げ</option>
+          </select>
+        </div>
+      </div>
+      <div class="standard-totals" aria-live="polite">
+        <div class="standard-total-row"><span>小計</span><strong id="standardEstimateSubtotal">0円</strong></div>
+        <div class="standard-total-row"><span>消費税</span><strong id="standardEstimateTaxAmount">0円</strong></div>
+        <div class="standard-total-row"><span>合計</span><strong id="standardEstimateTotal">0円</strong></div>
+        <div class="standard-total-row final"><span>提出金額</span><strong id="standardEstimateSubmittedAmount">0円</strong></div>
+      </div>
+    </section>
+
+    <section class="standard-estimate-section">
+      <h3>備考</h3>
+      <textarea class="form-textarea" id="standardEstimateNote"></textarea>
+    </section>
+
+    <section class="standard-estimate-section">
+      <h3>事業者情報</h3>
+      <label class="form-label" for="standardEstimateBusinessProfile">使用する事業者設定</label>
+      <select class="form-select" id="standardEstimateBusinessProfile"></select>
+      <div class="field-error" id="standardEstimateBusinessError"></div>
+      <div class="standard-business-card" id="standardEstimateBusinessCard"></div>
+    </section>
+
+    <section class="standard-estimate-section standard-pdf-result" id="standardEstimatePdfResult" aria-live="polite">
+      <h3>最新のPDF生成結果</h3>
+      <div id="standardEstimatePdfWarnings" class="standard-warning-box"></div>
+      <dl id="standardEstimatePdfResultDetails"></dl>
+      <a class="btn-secondary" id="standardEstimatePdfOpen" href="#" target="_blank" rel="noopener">PDFを新しいタブで開く</a>
+      <button class="btn-primary" id="btnAttachStandardEstimateToCase" type="button">この版を案件へ保存</button>
+      <div class="hint" id="standardEstimateAttachmentStatus"></div>
+    </section>
+
+    <div class="standard-save-actions">
+      <button class="btn-primary" id="btnSaveStandardEstimate" type="button">下書き保存</button>
+      <button class="btn-secondary" id="btnGenerateStandardEstimatePdf" type="button">PDFを生成</button>
+    </div>
+    <a href="#" class="btn-secondary standard-estimate-back-flow" id="btnCancelStandardEstimateEdit">案件詳細へ戻る</a>
   </section>
 
   <!-- ── ビュー3：生成完了 ── -->
@@ -692,6 +914,17 @@ var state = {
   extractDocuments: [],   // Ver2.0：同じ案件に紐づく資料一覧
   phase2Detail: null,      // Ver2.2-Final：編集中の案件カルテ
   phase2OriginalSnapshot: null, // Phase3.2A：対象4項目の編集前スナップショット
+  standardEstimate: null,
+  standardEstimateInitial: null,
+  standardEstimateWarnings: [],
+  standardEstimateOriginalSnapshot: '',
+  standardEstimateDirty: false,
+  standardEstimatePendingRequest: null,
+  standardEstimatePdfPending: null,
+  standardEstimateList: [],
+  standardEstimateAttached: null,
+  standardEstimateDisplayedPdf: null,
+  standardEstimateAttachPending: null,
 };
 
 // ── ユーティリティ ──────────────────────────────
@@ -1049,6 +1282,7 @@ function openDetail(caseId) {
     state.currentCase = data.case;
     renderDetail();
     showView('detail');
+    loadStandardEstimateOverview(caseId);
   });
 }
 
@@ -1071,6 +1305,569 @@ function renderDetail() {
 
   $('btnGenerate').textContent = c.pdfUrl ? '見積書を再生成する' : '見積書を生成する';
   $('btnGenerate').disabled = false;
+}
+
+// ── 標準見積書 Phase 1 / Step 3 ───────────────────
+
+function loadStandardEstimateOverview(caseId) {
+  $('standardEstimateOverview').innerHTML = '<div class="standard-estimate-empty">標準見積書を確認中…</div>';
+  callStandardEstimateApi('api_listStandardEstimates', [caseId], '標準見積書を確認中にゃん…', function (data) {
+    state.standardEstimateList = data.estimates || [];
+    state.standardEstimateAttached = data.attachedStandardEstimate || null;
+    renderStandardEstimateOverview();
+  }, function (error) {
+    $('standardEstimateOverview').innerHTML = '<div class="standard-estimate-empty">' + escapeHtml(error.message) + '</div>';
+  });
+}
+
+function renderStandardEstimateOverview() {
+  var estimates = state.standardEstimateList || [];
+  var active = estimates.filter(function (item) { return item.state === 'draft' || item.state === 'pdf_generated'; });
+  var past = estimates.filter(function (item) { return item.state === 'submitted'; });
+  var canceled = estimates.filter(function (item) { return item.state === 'canceled'; });
+  var container = $('standardEstimateOverview');
+  if (!estimates.length) {
+    container.innerHTML = '<div class="standard-estimate-empty">標準見積書はまだありません。</div>';
+    return;
+  }
+  var attached = state.standardEstimateAttached;
+  var attachmentHtml = attached
+    ? '<div class="standard-tax-suggestion"><strong>案件の採用版</strong><br>' + escapeHtml(attached.estimateNumber) +
+      '／第' + Number(attached.version) + '版／' + escapeHtml(standardEstimateStateLabel_(attached.status)) +
+      '<br><a href="' + escapeHtml(attached.pdfUrl) + '" target="_blank" rel="noopener">PDFを開く</a>' +
+      (attached.status === 'canceled' ? '<br><strong>採用中の見積書は取消済みです</strong>' : '') + '</div>'
+    : '<div class="standard-warning-box show"><strong>要確認</strong>標準見積書は作成済みですが、案件へ保存された版はありません。</div>';
+  container.innerHTML = attachmentHtml + renderStandardEstimateGroup_('利用中・編集中', active, true) +
+    '<details class="standard-estimate-history"><summary>履歴を見る</summary>' +
+    renderStandardEstimateGroup_('過去の見積書', past, false) +
+    renderStandardEstimateGroup_('取消済み', canceled, false, true) + '</details>';
+  container.querySelectorAll('[data-standard-estimate-id]').forEach(function (button) {
+    button.addEventListener('click', function () { openExistingStandardEstimate(button.getAttribute('data-standard-estimate-id')); });
+  });
+}
+
+function renderStandardEstimateGroup_(title, items, editable, collapsed) {
+  if (!items.length && collapsed) return '';
+  var content = items.length ? items.map(function (item) {
+    return '<div class="standard-estimate-row">' +
+      '<div><div class="standard-estimate-number">' + escapeHtml(item.estimateNumber || '未採番') + '</div>' +
+      '<div class="standard-estimate-meta">' + escapeHtml(standardEstimateStateLabel_(item.state)) +
+      '／更新 ' + escapeHtml(formatStandardEstimateDateTime_(item.updatedAt)) +
+      '／' + formatStandardEstimateYen_(item.submittedAmount) +
+      '／第' + Number(item.latestVersion || 0) + '版</div></div>' +
+      (editable ? '<button class="btn-mini" type="button" data-standard-estimate-id="' + escapeHtml(item.estimateId) + '">編集する</button>' : '') +
+      '</div>';
+  }).join('') : '<div class="standard-estimate-empty">該当する見積書はありません。</div>';
+  return '<div class="standard-estimate-group' + (collapsed ? ' is-canceled' : '') + '">' +
+    '<div class="standard-estimate-group-title">' + escapeHtml(title) + '</div>' + content + '</div>';
+}
+
+function startNewStandardEstimate() {
+  var c = state.currentCase;
+  if (!c) return;
+  callStandardEstimateApi('api_getStandardEstimateInitialData', [c.caseId], '標準見積書の初期値を準備中にゃん…', function (data, warnings) {
+    state.standardEstimateInitial = data;
+    state.standardEstimateWarnings = warnings || [];
+    state.standardEstimate = buildNewStandardEstimateViewModel_(data);
+    renderStandardEstimateEditor();
+    showView('standard-estimate');
+  }, function (error) { showError(error.message); });
+}
+
+function openExistingStandardEstimate(estimateId) {
+  callStandardEstimateApi('api_getStandardEstimate', [estimateId], '標準見積書を読み込み中にゃん…', function (data, warnings) {
+    var estimate = data.estimate;
+    if (!estimate || !estimate.header) return showError('標準見積書を取得できませんでした。');
+    if (estimate.header.state === 'canceled') return showError('取消済みの標準見積書は編集できません。');
+    state.standardEstimateInitial = null;
+    state.standardEstimateWarnings = warnings || [];
+    state.standardEstimate = buildSavedStandardEstimateViewModel_(estimate);
+    renderStandardEstimateEditor();
+    showView('standard-estimate');
+  }, function (error) { showError(error.message); });
+}
+
+function buildNewStandardEstimateViewModel_(data) {
+  var profile = data.businessProfile || null;
+  return {
+    estimateId: '', estimateNumber: '', lockVersion: 0, state: 'draft',
+    caseId: data.caseId, estimateDate: localStandardEstimateDate_(), addressee: data.addresseeCandidate || '',
+    subject: data.subject || '', deliveryDate: data.deliveryDate || '', deliveryPlace: data.deliveryPlace || '',
+    validity: data.validityCandidate || '', note: '', amountDisplay: data.taxSuggestion.value || 'exclusive',
+    taxCategory: 'standard', taxRate: 0.10, roundingMode: 'round',
+    businessProfile: profile, businessProfileId: profile ? profile.profileId : '',
+    items: (data.initialItems || []).map(normalizeStandardEstimateViewItem_),
+    taxSuggestion: data.taxSuggestion || { value: 'exclusive', reason: '既定値', editable: true, confirmed: false },
+  };
+}
+
+function buildSavedStandardEstimateViewModel_(estimate) {
+  var h = estimate.header;
+  var business = h.businessSnapshot || null;
+  var latestHistory = (estimate.pdfHistory || []).slice().sort(function (a, b) { return Number(a['版番号']) - Number(b['版番号']); }).pop() || null;
+  return {
+    estimateId: h.estimateId, estimateNumber: h.estimateNumber, lockVersion: h.lockVersion, state: h.state,
+    caseId: h.caseId, estimateDate: h.estimateDate, addressee: h.addressee, subject: h.subject,
+    deliveryDate: h.deliveryDate, deliveryPlace: h.deliveryPlace, validity: h.validity, note: h.note,
+    amountDisplay: h.amountDisplay, taxCategory: h.taxCategory, taxRate: h.taxRate, roundingMode: h.roundingMode,
+    submittedAmount: h.submittedAmount,
+    latestVersion: h.latestVersion || 0, latestPdfUrl: h.latestPdfUrl || '', latestPdfFileId: h.latestPdfFileId || '', latestPdfHistory: latestHistory,
+    businessProfile: business, businessProfileId: h.businessProfileId,
+    items: (estimate.items || []).map(normalizeStandardEstimateViewItem_),
+    taxSuggestion: { value: h.amountDisplay, reason: '保存済みの設定', editable: true, confirmed: true },
+  };
+}
+
+function normalizeStandardEstimateViewItem_(item) {
+  return {
+    name: item.name || '', specification: item.specification || '', quantity: item.quantity === undefined ? 1 : item.quantity,
+    unit: item.unit || '', unitPrice: item.unitPrice === undefined ? '' : item.unitPrice,
+    amount: item.amount === undefined ? '' : item.amount, note: item.note || '', candidate: item.candidate === true,
+  };
+}
+
+function renderStandardEstimateEditor() {
+  var draft = state.standardEstimate;
+  $('standardEstimateCaseMeta').textContent = '案件ID ' + draft.caseId + '／' + (state.currentCase && state.currentCase.caseName || draft.subject || '');
+  $('standardEstimateNumber').value = draft.estimateNumber || '保存時に採番';
+  $('standardEstimateDate').value = draft.estimateDate || '';
+  $('standardEstimateAddressee').value = draft.addressee || '';
+  $('standardEstimateSubject').value = draft.subject || '';
+  $('standardEstimateDeliveryDate').value = draft.deliveryDate || '';
+  $('standardEstimateDeliveryPlace').value = draft.deliveryPlace || '';
+  $('standardEstimateValidity').value = draft.validity || '';
+  $('standardEstimateNote').value = draft.note || '';
+  $('standardEstimateAmountDisplay').value = draft.amountDisplay || 'exclusive';
+  $('standardEstimateTaxCategory').value = draft.taxCategory || 'standard';
+  $('standardEstimateTaxRate').value = draft.taxRate === undefined ? 0.10 : draft.taxRate;
+  $('standardEstimateRoundingMode').value = draft.roundingMode || 'round';
+  $('standardEstimateTaxSuggestion').innerHTML = '<strong>' + escapeHtml(draft.amountDisplay === 'inclusive' ? '税込' : '税抜') +
+    'を初期候補にしました</strong><br>理由：' + escapeHtml(draft.taxSuggestion.reason || '既定値') +
+    '<br><span>候補であり、自動確定ではありません。変更できます。</span>';
+  renderStandardEstimateWarnings_();
+  renderStandardEstimateItems_();
+  renderStandardEstimateBusiness_();
+  updateStandardEstimateTaxControls_();
+  calculateStandardEstimateClientTotals_();
+  clearStandardEstimateFieldErrors_();
+  $('standardEstimateConflict').classList.remove('show');
+  state.standardEstimateOriginalSnapshot = standardEstimateSnapshot_();
+  state.standardEstimateDirty = false;
+  state.standardEstimatePendingRequest = null;
+  $('standardEstimatePdfResult').classList.remove('show');
+  if (draft.latestVersion && draft.latestPdfUrl) {
+    var latest = draft.latestPdfHistory || {};
+    renderStandardEstimatePdfResult_({ version: draft.latestVersion, url: draft.latestPdfUrl,
+      fileId: draft.latestPdfFileId || latest['PDFファイルID'] || '', pageCount: Number(latest['ページ数']) || 1,
+      folderId: latest['保存先フォルダID'] || '', usedFallbackFolder: false }, []);
+  }
+}
+
+function renderStandardEstimateWarnings_() {
+  var warnings = state.standardEstimateWarnings || [];
+  var box = $('standardEstimateWarnings');
+  if (!warnings.length) { box.classList.remove('show'); box.innerHTML = ''; return; }
+  box.innerHTML = '<strong>要確認</strong><ul>' + warnings.map(function (warning) {
+    return '<li>' + escapeHtml(warning) + '<br><span>内容を確認して入力してください。</span></li>';
+  }).join('') + '</ul>';
+  box.classList.add('show');
+}
+
+function renderStandardEstimateItems_() {
+  var items = state.standardEstimate.items || [];
+  $('standardEstimateItems').innerHTML = items.map(function (item, index) {
+    var candidate = item.candidate ? '<div class="standard-candidate-note"><strong>候補入力</strong><br>' +
+      '案件情報から明細を確定できなかったため、仮の内容を表示しています。' +
+      '<br><button class="btn-mini" type="button" data-standard-action="confirm" data-index="' + index + '">候補内容を確認</button></div>' : '';
+    return '<article class="standard-item-card' + (item.candidate ? ' is-candidate' : '') + '" data-item-index="' + index + '">' +
+      '<div class="standard-item-heading"><strong>明細' + (index + 1) + '</strong><span class="standard-estimate-meta">' +
+      (item.candidate ? '要確認' : '確認済み') + '</span></div>' + candidate +
+      '<div class="standard-item-grid">' +
+      standardEstimateItemField_('品名', 'name', item.name, index, 'text', true) +
+      standardEstimateItemField_('仕様・型番', 'specification', item.specification, index, 'text', true) +
+      standardEstimateItemField_('数量', 'quantity', item.quantity, index, 'decimal', false) +
+      standardEstimateItemField_('単位', 'unit', item.unit, index, 'text', false) +
+      standardEstimateItemField_('単価', 'unitPrice', item.unitPrice, index, 'numeric', true) +
+      '<div class="form-group wide"><label class="form-label">金額</label><div class="standard-item-amount" data-item-amount="' + index + '">' +
+      formatStandardEstimateYen_(calculateStandardEstimateItemAmount_(item)) + '</div></div>' +
+      standardEstimateItemField_('備考', 'note', item.note, index, 'text', true) + '</div>' +
+      '<div class="standard-item-buttons">' +
+      '<button class="btn-mini" type="button" data-standard-action="up" data-index="' + index + '"' + (index === 0 ? ' disabled' : '') + '>上へ</button>' +
+      '<button class="btn-mini" type="button" data-standard-action="down" data-index="' + index + '"' + (index === items.length - 1 ? ' disabled' : '') + '>下へ</button>' +
+      '<button class="btn-mini" type="button" data-standard-action="duplicate" data-index="' + index + '">複製</button>' +
+      '<button class="btn-mini" type="button" data-standard-action="delete" data-index="' + index + '"' + (items.length === 1 ? ' disabled' : '') + '>削除</button>' +
+      '</div></article>';
+  }).join('');
+}
+
+function standardEstimateItemField_(label, field, value, index, inputMode, wide) {
+  var inputId = 'standardItem-' + index + '-' + field;
+  return '<div class="form-group' + (wide ? ' wide' : '') + '"><label class="form-label" for="' + inputId + '">' + label + '</label>' +
+    '<input class="form-input" id="' + inputId + '" data-standard-item-field="' + field + '" data-index="' + index + '" inputmode="' + inputMode +
+    '" value="' + escapeHtml(value) + '"><div class="field-error" data-item-error="' + index + '-' + field + '"></div></div>';
+}
+
+function renderStandardEstimateBusiness_() {
+  var profile = state.standardEstimate.businessProfile;
+  var select = $('standardEstimateBusinessProfile');
+  if (!profile || !profile.profileId) {
+    select.innerHTML = '<option value="">有効な事業者設定がありません</option>';
+    $('standardEstimateBusinessCard').innerHTML = '事業者情報を取得できませんでした。下書き保存には有効な事業者設定が必要です。';
+    $('standardEstimateBusinessError').textContent = '有効な事業者設定がないため保存できません。';
+    $('standardEstimateBusinessError').classList.add('show');
+    return;
+  }
+  select.innerHTML = '<option value="' + escapeHtml(profile.profileId) + '">' + escapeHtml(profile.name || profile.profileId) + '</option>';
+  select.value = state.standardEstimate.businessProfileId || profile.profileId;
+  $('standardEstimateBusinessCard').innerHTML =
+    '<div><strong>' + escapeHtml(profile.name || '') + '</strong></div>' +
+    '<div>' + escapeHtml([profile.postalCode, profile.address].filter(Boolean).join(' ')) + '</div>' +
+    '<div>' + escapeHtml([profile.representativeRole, profile.representativeName].filter(Boolean).join(' ')) + '</div>' +
+    '<div>電話：' + escapeHtml(profile.phone || '') + '</div><div>メール：' + escapeHtml(profile.email || '') + '</div>';
+  $('standardEstimateBusinessError').classList.remove('show');
+}
+
+function handleStandardEstimateItemInput(event) {
+  var input = event.target.closest('[data-standard-item-field]');
+  if (!input) return;
+  var index = Number(input.getAttribute('data-index'));
+  var field = input.getAttribute('data-standard-item-field');
+  var item = state.standardEstimate.items[index];
+  if (!item) return;
+  item[field] = input.value;
+  var wasCandidate = item.candidate;
+  item.candidate = false;
+  var card = input.closest('.standard-item-card');
+  if (wasCandidate && card) {
+    card.classList.remove('is-candidate');
+    var candidateNote = card.querySelector('.standard-candidate-note');
+    if (candidateNote) candidateNote.remove();
+    var meta = card.querySelector('.standard-item-heading .standard-estimate-meta');
+    if (meta) meta.textContent = '確認済み';
+  }
+  calculateStandardEstimateClientTotals_();
+  markStandardEstimateDirty_();
+}
+
+function handleStandardEstimateItemAction(event) {
+  var button = event.target.closest('[data-standard-action]');
+  if (!button) return;
+  var index = Number(button.getAttribute('data-index'));
+  var action = button.getAttribute('data-standard-action');
+  var items = state.standardEstimate.items;
+  if (action === 'confirm') items[index].candidate = false;
+  if (action === 'duplicate') items.splice(index + 1, 0, Object.assign({}, items[index], { candidate: false }));
+  if (action === 'delete' && items.length > 1) items.splice(index, 1);
+  if (action === 'up' && index > 0) { var previous = items[index - 1]; items[index - 1] = items[index]; items[index] = previous; }
+  if (action === 'down' && index < items.length - 1) { var next = items[index + 1]; items[index + 1] = items[index]; items[index] = next; }
+  renderStandardEstimateItems_();
+  calculateStandardEstimateClientTotals_();
+  markStandardEstimateDirty_();
+}
+
+function addStandardEstimateItem() {
+  state.standardEstimate.items.push({ name: '', specification: '', quantity: 1, unit: '式', unitPrice: '', amount: '', note: '', candidate: false });
+  renderStandardEstimateItems_();
+  calculateStandardEstimateClientTotals_();
+  markStandardEstimateDirty_();
+}
+
+function collectStandardEstimateDraft_() {
+  var draft = state.standardEstimate;
+  draft.estimateDate = $('standardEstimateDate').value;
+  draft.addressee = $('standardEstimateAddressee').value.trim();
+  draft.subject = $('standardEstimateSubject').value.trim();
+  draft.deliveryDate = $('standardEstimateDeliveryDate').value.trim();
+  draft.deliveryPlace = $('standardEstimateDeliveryPlace').value.trim();
+  draft.validity = $('standardEstimateValidity').value.trim();
+  draft.note = $('standardEstimateNote').value.trim();
+  draft.amountDisplay = $('standardEstimateAmountDisplay').value;
+  draft.taxCategory = $('standardEstimateTaxCategory').value;
+  draft.taxRate = Number($('standardEstimateTaxRate').value);
+  draft.roundingMode = $('standardEstimateRoundingMode').value;
+  draft.businessProfileId = $('standardEstimateBusinessProfile').value;
+  return {
+    caseId: draft.caseId, estimateDate: draft.estimateDate, addressee: draft.addressee, subject: draft.subject,
+    deliveryDate: draft.deliveryDate, deliveryPlace: draft.deliveryPlace, validity: draft.validity, note: draft.note,
+    amountDisplay: draft.amountDisplay, taxCategory: draft.taxCategory, taxRate: draft.taxRate,
+    roundingMode: draft.roundingMode, businessProfileId: draft.businessProfileId,
+    businessSnapshot: draft.businessProfile || {},
+    items: draft.items.map(function (item) {
+      return { name: item.name.trim(), specification: item.specification.trim(), quantity: item.quantity,
+        unit: item.unit.trim(), unitPrice: item.unitPrice, note: item.note.trim() };
+    }),
+  };
+}
+
+function validateStandardEstimateEditor_() {
+  clearStandardEstimateFieldErrors_();
+  var valid = true;
+  valid = requireStandardEstimateField_('standardEstimateDate', 'standardEstimateDateError', '作成日を入力してください。') && valid;
+  valid = requireStandardEstimateField_('standardEstimateAddressee', 'standardEstimateAddresseeError', '宛先を入力してください。') && valid;
+  valid = requireStandardEstimateField_('standardEstimateSubject', 'standardEstimateSubjectError', '件名を入力してください。') && valid;
+  if (!state.standardEstimate.businessProfile || !$('standardEstimateBusinessProfile').value) {
+    $('standardEstimateBusinessError').textContent = '有効な事業者設定を選択してください。';
+    $('standardEstimateBusinessError').classList.add('show'); valid = false;
+  }
+  state.standardEstimate.items.forEach(function (item, index) {
+    [['name', '品名'], ['unit', '単位'], ['quantity', '数量'], ['unitPrice', '単価']].forEach(function (field) {
+      var value = item[field[0]];
+      var invalid = value === '' || value === null || value === undefined ||
+        (field[0] === 'quantity' && !(Number(value) > 0)) || (field[0] === 'unitPrice' && !(Number(value) >= 0));
+      if (invalid) { showStandardEstimateItemError_(index, field[0], field[1] + 'を正しく入力してください。'); valid = false; }
+    });
+  });
+  if (!valid) { $('standardEstimateItemsError').textContent = '必須項目を確認してください。'; $('standardEstimateItemsError').classList.add('show'); }
+  return valid;
+}
+
+function saveStandardEstimateEditor(onSaved) {
+  collectStandardEstimateDraft_();
+  if (!validateStandardEstimateEditor_()) { showError('入力内容を確認してください。'); return; }
+  var payload = collectStandardEstimateDraft_();
+  var action = state.standardEstimate.estimateId ? 'save' : 'create';
+  var payloadKey = JSON.stringify(payload) + '|' + state.standardEstimate.lockVersion;
+  var pending = state.standardEstimatePendingRequest;
+  var requestId = pending && pending.action === action && pending.payloadKey === payloadKey ? pending.requestId : createStandardEstimateRequestId_();
+  state.standardEstimatePendingRequest = { action: action, payloadKey: payloadKey, requestId: requestId };
+  var fn = action === 'create' ? 'api_createStandardEstimate' : 'api_saveStandardEstimateDraft';
+  var args = action === 'create'
+    ? [state.standardEstimate.caseId, payload, requestId]
+    : [state.standardEstimate.estimateId, payload, state.standardEstimate.lockVersion, requestId];
+  callStandardEstimateApi(fn, args, '下書きを保存中にゃん…', function (data) {
+    var saved = data.estimate;
+    state.standardEstimatePendingRequest = null;
+    reloadSavedStandardEstimate_(saved.header.estimateId, true, onSaved);
+  }, function (error, isTransport) {
+    if (!isTransport) state.standardEstimatePendingRequest = null;
+    if (error.code === 'LOCK_CONFLICT') { $('standardEstimateConflict').classList.add('show'); return; }
+    if (error.code === 'VALIDATION_ERROR') applyStandardEstimateApiValidationError_(error);
+    showError(error.message);
+  });
+}
+
+function reloadSavedStandardEstimate_(estimateId, showSavedToast, onReloaded) {
+  callStandardEstimateApi('api_getStandardEstimate', [estimateId], '保存内容を確認中にゃん…', function (data) {
+    state.standardEstimate = buildSavedStandardEstimateViewModel_(data.estimate);
+    state.standardEstimateWarnings = [];
+    renderStandardEstimateEditor();
+    loadStandardEstimateOverview(state.standardEstimate.caseId);
+    if (showSavedToast) showToast('下書きを保存したにゃん');
+    if (onReloaded) onReloaded(state.standardEstimate);
+  }, function (error) { showError(error.message); });
+}
+
+function generateStandardEstimatePdfEditor() {
+  if (state.standardEstimateDirty || !state.standardEstimate.estimateId) {
+    saveStandardEstimateEditor(function () { generateStandardEstimatePdfEditor(); });
+    return;
+  }
+  var estimate = state.standardEstimate;
+  var payloadKey = estimate.estimateId + '|' + estimate.lockVersion;
+  var pending = state.standardEstimatePdfPending;
+  var requestId = pending && pending.payloadKey === payloadKey ? pending.requestId : createStandardEstimateRequestId_();
+  state.standardEstimatePdfPending = { payloadKey: payloadKey, requestId: requestId };
+  setStandardEstimatePdfBusy_(true);
+  callStandardEstimateApi('api_generateStandardEstimatePdf', [estimate.estimateId, estimate.lockVersion, requestId], 'PDFを生成中にゃん…', function (data, warnings) {
+    state.standardEstimatePdfPending = null;
+    setStandardEstimatePdfBusy_(false);
+    state.standardEstimate = buildSavedStandardEstimateViewModel_(data.estimate);
+    renderStandardEstimateEditor();
+    renderStandardEstimatePdfResult_(data.pdf, warnings || []);
+    loadStandardEstimateOverview(state.standardEstimate.caseId);
+    showToast('標準見積書PDFを生成したにゃん');
+  }, function (error, isTransport) {
+    if (!isTransport) state.standardEstimatePdfPending = null;
+    setStandardEstimatePdfBusy_(false);
+    if (error.code === 'LOCK_CONFLICT') $('standardEstimateConflict').classList.add('show');
+    if (error.code === 'PDF_VALIDATION_ERROR' && error.details && error.details.fields) {
+      showError('PDF生成に必要な項目：' + error.details.fields.join('、'));
+      return;
+    }
+    showError(error.message);
+  });
+}
+
+function setStandardEstimatePdfBusy_(busy) {
+  $('btnSaveStandardEstimate').disabled = busy;
+  $('btnGenerateStandardEstimatePdf').disabled = busy;
+  $('btnGenerateStandardEstimatePdf').textContent = busy ? 'PDF生成中…' : 'PDFを生成';
+}
+
+function renderStandardEstimatePdfResult_(pdf, warnings) {
+  var result = pdf || {};
+  state.standardEstimateDisplayedPdf = result;
+  $('standardEstimatePdfResultDetails').innerHTML =
+    '<dt>見積番号</dt><dd>' + escapeHtml(state.standardEstimate.estimateNumber || '') + '</dd>' +
+    '<dt>版番号</dt><dd>第' + Number(result.version || 0) + '版</dd>' +
+    '<dt>ページ数</dt><dd>' + Number(result.pageCount || 1) + 'ページ</dd>' +
+    '<dt>提出金額</dt><dd>' + formatStandardEstimateYen_(state.standardEstimate.submittedAmount || 0) + '</dd>' +
+    '<dt>保存先</dt><dd>' + escapeHtml(result.usedFallbackFolder ? '見積書_生成物（フォールバック）' : '案件フォルダ / 04_見積') + '</dd>';
+  $('standardEstimatePdfOpen').href = result.url || '#';
+  var warningBox = $('standardEstimatePdfWarnings');
+  warningBox.innerHTML = warnings.length ? '<strong>要確認</strong><ul>' + warnings.map(function (warning) { return '<li>' + escapeHtml(warning) + '</li>'; }).join('') + '</ul>' : '';
+  warningBox.classList.toggle('show', warnings.length > 0);
+  $('standardEstimatePdfResult').classList.add('show');
+  renderStandardEstimateAttachmentStatus_();
+}
+
+function renderStandardEstimateAttachmentStatus_() {
+  var pdf = state.standardEstimateDisplayedPdf || {};
+  var attached = state.standardEstimateAttached;
+  var same = attached && attached.estimateId === state.standardEstimate.estimateId && Number(attached.version) === Number(pdf.version);
+  $('standardEstimateAttachmentStatus').textContent = same
+    ? 'この版は案件の採用版です'
+    : attached ? '現在の採用版：第' + Number(attached.version) + '版／表示中：第' + Number(pdf.version) + '版' : '案件へ保存された版はありません';
+  $('btnAttachStandardEstimateToCase').textContent = same ? 'この版は案件へ保存済み' : 'この版を案件へ保存';
+  $('btnAttachStandardEstimateToCase').disabled = !!same || state.standardEstimateDirty;
+}
+
+function attachDisplayedStandardEstimateToCase() {
+  if (state.standardEstimateDirty) { showError('未保存の変更があります。下書き保存とPDF生成を完了してから案件へ保存してください。'); return; }
+  var estimate = state.standardEstimate, pdf = state.standardEstimateDisplayedPdf;
+  if (!estimate || !estimate.estimateId || !pdf || !Number(pdf.version)) { showError('案件へ保存できるPDF版がありません。'); return; }
+  var payloadKey = estimate.estimateId + '|' + pdf.version + '|' + estimate.lockVersion;
+  var pending = state.standardEstimateAttachPending;
+  var requestId = pending && pending.payloadKey === payloadKey ? pending.requestId : createStandardEstimateRequestId_();
+  state.standardEstimateAttachPending = { payloadKey: payloadKey, requestId: requestId };
+  $('btnAttachStandardEstimateToCase').disabled = true;
+  callStandardEstimateApi('api_attachStandardEstimateToCase', [estimate.estimateId, Number(pdf.version), estimate.lockVersion, requestId], '案件へ保存中にゃん…', function (data, warnings) {
+    state.standardEstimateAttachPending = null;
+    state.standardEstimateAttached = data.attachedEstimate;
+    state.standardEstimate = buildSavedStandardEstimateViewModel_(data.estimate);
+    renderStandardEstimateAttachmentStatus_();
+    loadStandardEstimateOverview(data.caseId);
+    if (warnings && warnings.length) state.standardEstimateWarnings = warnings;
+    showToast('このPDF版を案件へ保存したにゃん');
+  }, function (error, isTransport) {
+    if (!isTransport) state.standardEstimateAttachPending = null;
+    $('btnAttachStandardEstimateToCase').disabled = false;
+    if (error.code === 'LOCK_CONFLICT') $('standardEstimateConflict').classList.add('show');
+    showError(error.message);
+  });
+}
+
+function calculateStandardEstimateClientTotals_() {
+  var items = state.standardEstimate.items || [];
+  var mode = $('standardEstimateRoundingMode').value || 'round';
+  var subtotal = items.reduce(function (sum, item, index) {
+    var amount = calculateStandardEstimateItemAmount_(item, mode);
+    item.amount = amount;
+    var amountEl = document.querySelector('[data-item-amount="' + index + '"]');
+    if (amountEl) amountEl.textContent = formatStandardEstimateYen_(amount);
+    return sum + amount;
+  }, 0);
+  var category = $('standardEstimateTaxCategory').value;
+  var rate = Number($('standardEstimateTaxRate').value) || 0;
+  var tax = category === 'exempt' || category === 'out_of_scope' ? 0 : roundStandardEstimateClientMoney_(subtotal * rate, mode);
+  var total = subtotal + tax;
+  var submitted = $('standardEstimateAmountDisplay').value === 'inclusive' ? total : subtotal;
+  $('standardEstimateSubtotal').textContent = formatStandardEstimateYen_(subtotal);
+  $('standardEstimateTaxAmount').textContent = formatStandardEstimateYen_(tax);
+  $('standardEstimateTotal').textContent = formatStandardEstimateYen_(total);
+  $('standardEstimateSubmittedAmount').textContent = formatStandardEstimateYen_(submitted);
+}
+
+function calculateStandardEstimateItemAmount_(item, mode) {
+  var quantity = Number(item.quantity);
+  var unitPrice = Number(String(item.unitPrice === '' ? 0 : item.unitPrice).replace(/[￥¥,\s]/g, ''));
+  if (!isFinite(quantity) || !isFinite(unitPrice)) return 0;
+  return roundStandardEstimateClientMoney_(quantity * unitPrice, mode || ($('standardEstimateRoundingMode') && $('standardEstimateRoundingMode').value) || 'round');
+}
+
+function roundStandardEstimateClientMoney_(value, mode) {
+  if (mode === 'floor') return Math.floor(value);
+  if (mode === 'ceil') return Math.ceil(value);
+  return Math.round(value);
+}
+
+function updateStandardEstimateTaxControls_() {
+  var category = $('standardEstimateTaxCategory').value;
+  var noTax = category === 'exempt' || category === 'out_of_scope';
+  if (noTax) $('standardEstimateTaxRate').value = 0;
+  else if (!(Number($('standardEstimateTaxRate').value) > 0)) $('standardEstimateTaxRate').value = 0.10;
+  $('standardEstimateTaxRate').readOnly = noTax;
+  calculateStandardEstimateClientTotals_();
+}
+
+function markStandardEstimateDirty_() {
+  collectStandardEstimateDraft_();
+  state.standardEstimateDirty = standardEstimateSnapshot_() !== state.standardEstimateOriginalSnapshot;
+  if (state.standardEstimateDisplayedPdf) renderStandardEstimateAttachmentStatus_();
+}
+
+function standardEstimateSnapshot_() { return JSON.stringify(collectStandardEstimateDraft_()); }
+
+function requestLeaveStandardEstimate_() {
+  if (state.standardEstimateDirty && !window.confirm('保存されていない変更があります。\nこのまま戻りますか？')) return false;
+  state.standardEstimate = null;
+  state.standardEstimateDirty = false;
+  renderDetail();
+  showView('detail');
+  return true;
+}
+
+function clearStandardEstimateFieldErrors_() {
+  document.querySelectorAll('#view-standard-estimate .field-error').forEach(function (element) { element.classList.remove('show'); element.textContent = ''; });
+  document.querySelectorAll('#view-standard-estimate .has-error').forEach(function (element) { element.classList.remove('has-error'); });
+}
+
+function requireStandardEstimateField_(inputId, errorId, message) {
+  if ($(inputId).value.trim()) return true;
+  $(inputId).classList.add('has-error'); $(errorId).textContent = message; $(errorId).classList.add('show'); return false;
+}
+
+function showStandardEstimateItemError_(index, field, message) {
+  var input = document.querySelector('[data-standard-item-field="' + field + '"][data-index="' + index + '"]');
+  var error = document.querySelector('[data-item-error="' + index + '-' + field + '"]');
+  if (input) input.classList.add('has-error');
+  if (error) { error.textContent = message; error.classList.add('show'); }
+}
+
+function applyStandardEstimateApiValidationError_(error) {
+  var field = error.details && error.details.field;
+  var map = { '作成日': ['standardEstimateDate', 'standardEstimateDateError'], '宛先': ['standardEstimateAddressee', 'standardEstimateAddresseeError'], '件名': ['standardEstimateSubject', 'standardEstimateSubjectError'] };
+  if (map[field]) { $(map[field][0]).classList.add('has-error'); $(map[field][1]).textContent = error.message; $(map[field][1]).classList.add('show'); }
+}
+
+function createStandardEstimateRequestId_() {
+  if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+  return 'std-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+}
+
+function localStandardEstimateDate_() {
+  var date = new Date();
+  return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+}
+
+function formatStandardEstimateYen_(value) { return (Number(value) || 0).toLocaleString('ja-JP') + '円'; }
+function formatStandardEstimateDateTime_(value) { return value ? String(value).replace('T', ' ').slice(0, 16) : '—'; }
+function standardEstimateStateLabel_(stateValue) {
+  return { draft: '下書き', pdf_generated: 'PDF生成済', submitted: '提出済み', canceled: '取消済み' }[stateValue] || stateValue || '不明';
+}
+
+/** Step 2標準見積API専用ラッパー（{ok,data,warnings,error,requestId}契約）。 */
+function callStandardEstimateApi(fnName, args, loadingMsg, onData, onError) {
+  clearError();
+  showOverlay(loadingMsg);
+  var runner = google.script.run
+    .withSuccessHandler(function (res) {
+      hideOverlay();
+      if (res && res.ok) {
+        onData(res.data || {}, res.warnings || [], res.requestId || '');
+        return;
+      }
+      var error = res && res.error ? res.error : { code: 'INTERNAL_ERROR', message: '標準見積書の処理に失敗しました。', details: {} };
+      if (onError) onError(error, false);
+      else showError(error.message);
+    })
+    .withFailureHandler(function (err) {
+      hideOverlay();
+      var error = { code: 'NETWORK_ERROR', message: '通信エラーにゃん：' + (err && err.message ? err.message : err), details: {} };
+      if (onError) onError(error, true);
+      else showError(error.message);
+    });
+  runner[fnName].apply(runner, args || []);
 }
 
 function normalizeAmountInput(value) {
@@ -1795,6 +2592,7 @@ function cancelExtract() {
 
 $('btnRefresh').addEventListener('click', loadCases);
 $('btnGenerate').addEventListener('click', generateEstimate);
+$('btnCreateStandardEstimate').addEventListener('click', startNewStandardEstimate);
 $('dAmountInput').addEventListener('input', updateAmountEditorState);
 $('btnSaveAmount').addEventListener('click', saveExpectedBidAmount);
 $('btnBackFromDetail').addEventListener('click', function (e) {
@@ -1806,6 +2604,33 @@ $('btnBackFromDone').addEventListener('click', function (e) {
   e.preventDefault();
   renderCaseList();
   showView('list');
+});
+
+$('btnBackFromStandardEstimate').addEventListener('click', function (e) { e.preventDefault(); requestLeaveStandardEstimate_(); });
+$('btnCancelStandardEstimateEdit').addEventListener('click', function (e) { e.preventDefault(); requestLeaveStandardEstimate_(); });
+$('btnAddStandardEstimateItem').addEventListener('click', addStandardEstimateItem);
+$('btnSaveStandardEstimate').addEventListener('click', function () { saveStandardEstimateEditor(); });
+$('btnGenerateStandardEstimatePdf').addEventListener('click', generateStandardEstimatePdfEditor);
+$('btnAttachStandardEstimateToCase').addEventListener('click', attachDisplayedStandardEstimateToCase);
+$('standardEstimateItems').addEventListener('input', handleStandardEstimateItemInput);
+$('standardEstimateItems').addEventListener('click', handleStandardEstimateItemAction);
+['standardEstimateDate', 'standardEstimateAddressee', 'standardEstimateSubject', 'standardEstimateDeliveryDate',
+  'standardEstimateDeliveryPlace', 'standardEstimateValidity', 'standardEstimateNote', 'standardEstimateTaxRate'].forEach(function (id) {
+  $(id).addEventListener('input', function () { calculateStandardEstimateClientTotals_(); markStandardEstimateDirty_(); });
+});
+['standardEstimateAmountDisplay', 'standardEstimateRoundingMode'].forEach(function (id) {
+  $(id).addEventListener('change', function () { calculateStandardEstimateClientTotals_(); markStandardEstimateDirty_(); });
+});
+$('standardEstimateTaxCategory').addEventListener('change', function () { updateStandardEstimateTaxControls_(); markStandardEstimateDirty_(); });
+$('standardEstimateBusinessProfile').addEventListener('change', markStandardEstimateDirty_);
+$('btnReloadStandardEstimate').addEventListener('click', function () {
+  if (state.standardEstimate && state.standardEstimate.estimateId) reloadSavedStandardEstimate_(state.standardEstimate.estimateId, false);
+});
+$('btnKeepStandardEstimateEdits').addEventListener('click', function () { $('standardEstimateConflict').classList.remove('show'); });
+window.addEventListener('beforeunload', function (event) {
+  if (!state.standardEstimateDirty) return;
+  event.preventDefault();
+  event.returnValue = '';
 });
 
 // Phase1 追加：資料でチェックのイベント登録

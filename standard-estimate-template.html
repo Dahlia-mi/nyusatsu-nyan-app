@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>標準見積書</title>
+  <style>
+    @page { size: A4 portrait; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; color: #111; background: #fff; font-family: "Yu Gothic", "Hiragino Kaku Gothic ProN", sans-serif; }
+    .page { position: relative; width: 210mm; min-height: 297mm; padding: 15mm 15mm 17mm; page-break-after: always; }
+    .page:last-child { page-break-after: auto; }
+    .document-meta { text-align: right; font-size: 9pt; line-height: 1.65; }
+    h1 { margin: 3mm 0 8mm; text-align: center; font-size: 21pt; letter-spacing: .35em; font-weight: 600; }
+    .parties { display: grid; grid-template-columns: 53% 47%; gap: 7mm; min-height: 34mm; }
+    .addressee { font-size: 13pt; font-weight: 600; border-bottom: .35mm solid #111; align-self: start; padding: 3mm 1mm 2mm; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .company { font-size: 8.7pt; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .subject { margin-top: 5mm; font-size: 10.5pt; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .amount { margin: 4mm 0 5mm; padding: 3mm 4mm; border: .5mm double #111; display: flex; justify-content: space-between; align-items: baseline; }
+    .amount strong { font-size: 17pt; letter-spacing: .04em; }
+    .amount-note { font-size: 8pt; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8.5pt; }
+    thead { display: table-header-group; }
+    th, td { border: .25mm solid #222; padding: 1.4mm 1.2mm; vertical-align: top; overflow-wrap: anywhere; white-space: pre-wrap; }
+    th { text-align: center; font-weight: 600; background: #f4f4f4; }
+    .c-no { width: 7%; text-align: center; } .c-name { width: 25%; } .c-spec { width: 25%; }
+    .c-qty { width: 9%; text-align: right; } .c-unit { width: 8%; text-align: center; }
+    .c-price, .c-money { width: 13%; text-align: right; white-space: nowrap; }
+    .line-note { display: block; margin-top: 1mm; font-size: 7.5pt; color: #333; }
+    .summary { width: 72mm; margin: 4mm 0 0 auto; font-size: 9pt; }
+    .summary-row { display: grid; grid-template-columns: 30mm 1fr; border-bottom: .25mm solid #333; padding: 1.4mm 1mm; }
+    .summary-row span:last-child { text-align: right; }
+    .summary-row.total { font-weight: 700; border-bottom: .5mm double #111; }
+    .terms { margin-top: 5mm; border-top: .3mm solid #111; padding-top: 2mm; font-size: 9pt; }
+    .term { display: grid; grid-template-columns: 31mm 1fr; gap: 3mm; margin: 1.2mm 0; }
+    .term-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .continued { margin: 2mm 0 4mm; font-size: 9pt; }
+    .page-footer { position: absolute; bottom: 8mm; left: 15mm; right: 15mm; display: flex; justify-content: space-between; font-size: 8pt; }
+  </style>
+</head>
+<body>
+<? var m = JSON.parse(modelJson); ?>
+<? m.pages.forEach(function(page) { ?>
+  <section class="page">
+    <div class="document-meta">見積番号：<?= m.estimateNumber ?><br>作成日：<?= m.estimateDate ?></div>
+    <? if (page.number === 1) { ?>
+      <h1>見 積 書</h1>
+      <div class="parties">
+        <div class="addressee"><?= m.case.addressee ?></div>
+        <div class="company">〒<?= m.company.postalCode ?>
+<?= m.company.address ?>
+<?= m.company.name ?>
+<?= [m.company.representativeRole, m.company.representativeName].filter(Boolean).join(' ') ?>
+<? if (m.company.phone) { ?>TEL：<?= m.company.phone ?><? } ?><? if (m.company.fax) { ?>　FAX：<?= m.company.fax ?><? } ?>
+<? if (m.company.email) { ?>E-mail：<?= m.company.email ?><? } ?>
+<? if (m.company.invoiceRegistrationNumber) { ?>登録番号：<?= m.company.invoiceRegistrationNumber ?><? } ?></div>
+      </div>
+      <div class="subject"><strong>件名：</strong><?= m.case.subject ?></div>
+      <div class="amount"><span>見積金額</span><strong>￥<?= Number(m.tax.submittedAmount).toLocaleString('ja-JP') ?>－</strong><span class="amount-note"><?= m.tax.amountDisplay === 'inclusive' ? '税込' : '税抜' ?></span></div>
+    <? } else { ?>
+      <h1>見 積 書</h1><div class="continued">明細（続き）</div>
+    <? } ?>
+    <table>
+      <thead><tr><th class="c-no">No.</th><th class="c-name">品名</th><th class="c-spec">仕様・型番</th><th class="c-qty">数量</th><th class="c-unit">単位</th><th class="c-price">単価</th><th class="c-money">金額</th></tr></thead>
+      <tbody>
+      <? page.items.forEach(function(item) { ?>
+        <tr><td class="c-no"><?= item.lineNumber ?></td><td><?= item.name ?><? if (item.note) { ?><span class="line-note">備考：<?= item.note ?></span><? } ?></td><td><?= item.specification ?></td><td class="c-qty"><?= item.quantity ?></td><td class="c-unit"><?= item.unit ?></td><td class="c-price"><?= Number(item.unitPrice).toLocaleString('ja-JP') ?></td><td class="c-money"><?= Number(item.amount).toLocaleString('ja-JP') ?></td></tr>
+      <? }); ?>
+      </tbody>
+    </table>
+    <? if (page.isFinal) { ?>
+      <div class="summary">
+        <div class="summary-row"><span>小計</span><span><?= Number(m.tax.subtotal).toLocaleString('ja-JP') ?>円</span></div>
+        <div class="summary-row"><span>消費税</span><span><?= Number(m.tax.taxAmount).toLocaleString('ja-JP') ?>円</span></div>
+        <div class="summary-row total"><span>合計</span><span><?= Number(m.tax.total).toLocaleString('ja-JP') ?>円</span></div>
+      </div>
+      <div class="terms">
+        <div class="term"><strong>納期</strong><div class="term-value"><?= m.case.deliveryDate ?></div></div>
+        <div class="term"><strong>納品場所</strong><div class="term-value"><?= m.case.deliveryPlace ?></div></div>
+        <? if (m.case.validity) { ?><div class="term"><strong>見積有効期限</strong><div class="term-value"><?= m.case.validity ?></div></div><? } ?>
+        <? if (m.note) { ?><div class="term"><strong>備考</strong><div class="term-value"><?= m.note ?></div></div><? } ?>
+      </div>
+    <? } ?>
+    <div class="page-footer"><span>見積番号：<?= m.estimateNumber ?></span><span><?= page.number ?> / <?= m.pageCount ?></span></div>
+  </section>
+<? }); ?>
+</body>
+</html>
