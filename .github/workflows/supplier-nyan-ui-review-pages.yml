@@ -1,4 +1,4 @@
-name: Supplier Nyan UI Review Pages
+name: Supplier Nyan UI Review Artifact
 
 on:
   push:
@@ -12,33 +12,22 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: supplier-nyan-ui-review-pages
+  group: supplier-nyan-ui-review-artifact
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  package-review:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout review branch
         uses: actions/checkout@v4
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
+      - name: Upload supplier-nyan review artifact
+        uses: actions/upload-artifact@v4
         with:
-          enablement: true
-
-      - name: Upload supplier-nyan static files
-        uses: actions/upload-pages-artifact@v3
-        with:
+          name: supplier-nyan-ui-review-${{ github.sha }}
           path: supplier-nyan
-
-      - name: Deploy review site
-        id: deployment
-        uses: actions/deploy-pages@v4
+          if-no-files-found: error
+          retention-days: 14
