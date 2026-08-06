@@ -136,3 +136,51 @@ test('server API names and signatures remain unchanged', () => {
     /function api_uploadQuoteFile\(\s*caseId,\s*itemId,\s*supplierName,\s*fileName,\s*mimeType,\s*base64Data\s*\)/
   ].forEach((signature) => assert.match(server, signature));
 });
+
+test('Phase C-1 separates Home from the research list', () => {
+  const home = read('supplier-nyan-home.html');
+  const list = read('supplier-nyan-case-list.html');
+  const scripts = read('supplier-nyan-scripts.html');
+
+  assert.doesNotMatch(home, /id="caseList"|探す品目/);
+  assert.match(list, /id="researchScreen"[^>]*hidden/);
+  assert.match(scripts, /homeScreen'\)\.hidden = !homeVisible/);
+  assert.match(scripts, /researchScreen'\)\.hidden = homeVisible/);
+  assert.match(scripts, /navigationState\('home'/);
+});
+
+test('Phase C-1 keeps all four navigation icon layers in the DOM', () => {
+  const styles = read('supplier-nyan-styles.html');
+  const scripts = read('supplier-nyan-scripts.html');
+
+  assert.match(scripts, /homeAssetImage\(item\.selected \|\| item\.asset/);
+  assert.match(styles, /\.nav-item__icon--default\s*\{\s*opacity:\s*1/);
+  assert.match(styles, /\.nav-item__icon--selected\s*\{\s*opacity:\s*0/);
+  assert.doesNotMatch(styles, /nav-item__icon[^}]*display:\s*none/);
+});
+
+test('Phase C-1 keeps name actions above navigation and locks background scroll', () => {
+  const dialogs = read('supplier-nyan-dialogs.html');
+  const styles = read('supplier-nyan-styles.html');
+  const scripts = read('supplier-nyan-scripts.html');
+
+  assert.match(dialogs, /modal__body[\s\S]*modal-actions/);
+  assert.match(styles, /\.modal-backdrop\s*\{[\s\S]*z-index:\s*60/);
+  assert.match(styles, /grid-template-rows:\s*minmax\(0, 1fr\) auto/);
+  assert.match(styles, /body\.modal-open\s*\{\s*overflow:\s*hidden/);
+  assert.match(scripts, /syncModalScrollLock/);
+});
+
+test('Phase C-1 gates Hero rendering and continuously persists Home scroll', () => {
+  const home = read('supplier-nyan-home.html');
+  const styles = read('supplier-nyan-styles.html');
+  const scripts = read('supplier-nyan-scripts.html');
+
+  assert.match(home, /id="heroLoading"[\s\S]*今日のご縁を探しています/);
+  assert.match(home, /fetchpriority="high"/);
+  assert.match(styles, /hero-section\.is-ready \.hero-loading/);
+  assert.match(scripts, /waitForHeroAssets\(\)/);
+  assert.match(scripts, /requestIdleCallback/);
+  assert.match(scripts, /window\.addEventListener\('scroll'/);
+  assert.match(scripts, /setTimeout\(replaceCurrentListScroll, 120\)/);
+});

@@ -1,9 +1,11 @@
   <div id="nameModal" class="modal-backdrop" hidden>
-    <form id="nameForm" class="modal">
-      <h2>相棒に名前をつけよう</h2>
-      <p>仕入先にゃんOS全体で共有する相棒名です。あとで変更できます。</p>
-      <label for="catName">猫の名前</label>
-      <input id="catName" maxlength="30" autocomplete="off" required>
+    <form id="nameForm" class="modal modal--fixed-actions">
+      <div class="modal__body">
+        <h2>相棒に名前をつけよう</h2>
+        <p>仕入先にゃんOS全体で共有する相棒名です。あとで変更できます。</p>
+        <label for="catName">猫の名前</label>
+        <input id="catName" maxlength="30" autocomplete="off" required>
+      </div>
       <div class="modal-actions">
         <button id="cancelNameButton" class="secondary-button" type="button">
           キャンセル

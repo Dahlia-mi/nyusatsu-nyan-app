@@ -1,10 +1,16 @@
         <div class="home-main" id="homeScreen">
-          <section class="hero-section" aria-label="今日の案内">
+          <section class="hero-section is-loading" id="homeHero"
+            aria-label="今日の案内" aria-busy="true">
+            <div class="hero-loading" id="heroLoading" role="status">
+              <span>今日のご縁を探しています…</span>
+            </div>
             <img class="hero-background"
-              data-home-asset-key="background.homeForest" alt="">
+              data-home-asset-key="background.homeForest" alt=""
+              fetchpriority="high" decoding="async">
             <img class="explorer-nyan"
               data-home-asset-key="character.explorerCat"
-              alt="今日の仕事を案内する探検にゃん">
+              alt="今日の仕事を案内する探検にゃん"
+              fetchpriority="high" decoding="async">
             <p class="daily-instruction" id="dailyInstruction"></p>
           </section>
 

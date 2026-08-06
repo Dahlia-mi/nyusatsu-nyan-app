@@ -17,7 +17,9 @@
           deploymentVersion: ''
         },
         ui: {
-          toastTimer: null
+          toastTimer: null,
+          scrollTimer: null,
+          restoringScroll: false
         },
         pending: {
           savingName: false,
@@ -197,6 +199,7 @@
 
       function openNameModal(required) {
         document.getElementById('nameModal').hidden = false;
+        syncModalScrollLock();
         document.getElementById('cancelNameButton').hidden = Boolean(required);
         document.getElementById('catName').value = AppContext.application.catName || '';
         setTimeout(function () { document.getElementById('catName').focus(); }, 0);
@@ -205,6 +208,15 @@
       function closeNameModal() {
         if (!AppContext.application.catName) return;
         document.getElementById('nameModal').hidden = true;
+        syncModalScrollLock();
+      }
+
+      function syncModalScrollLock() {
+        var modalOpen = Array.prototype.some.call(
+          document.querySelectorAll('.modal-backdrop'),
+          function (modal) { return !modal.hidden; }
+        );
+        document.body.classList.toggle('modal-open', modalOpen);
       }
 
       // Progress presentation helpers
@@ -318,7 +330,17 @@
       }
 
       function applyHomeAssets() {
+        var priorityKeys = {
+          'background.homeForest': true,
+          'character.explorerCat': true
+        };
+        var deferredImages = [];
         document.querySelectorAll('[data-home-asset-key]').forEach(function (image) {
+          var key = image.getAttribute('data-home-asset-key');
+          if (!priorityKeys[key]) {
+            deferredImages.push(image);
+            return;
+          }
           var source = homeAsset(image.getAttribute('data-home-asset-key'));
           if (source) image.src = source;
         });
@@ -331,6 +353,38 @@
           root.style.setProperty('--asset-unread-badge',
             'url("' + homeAsset('header.unreadBadge') + '")');
         }
+        waitForHeroAssets();
+        var loadDeferred = function () {
+          deferredImages.forEach(function (image) {
+            var source = homeAsset(image.getAttribute('data-home-asset-key'));
+            if (source) image.src = source;
+          });
+        };
+        if ('requestIdleCallback' in window) {
+          window.requestIdleCallback(loadDeferred, { timeout: 900 });
+        } else {
+          setTimeout(loadDeferred, 0);
+        }
+      }
+
+      function waitForHeroAssets() {
+        var hero = document.getElementById('homeHero');
+        var images = hero ? hero.querySelectorAll(
+          '.hero-background, .explorer-nyan'
+        ) : [];
+        var remaining = images.length;
+        if (!remaining) return;
+        function ready() {
+          remaining--;
+          if (remaining > 0) return;
+          hero.classList.remove('is-loading');
+          hero.classList.add('is-ready');
+          hero.setAttribute('aria-busy', 'false');
+        }
+        Array.prototype.forEach.call(images, function (image) {
+          if (image.complete && image.naturalWidth > 0) ready();
+          else image.addEventListener('load', ready, { once: true });
+        });
       }
 
       function renderQuests() {
@@ -734,7 +788,7 @@
             escapeHtml(item.label) + '" aria-current="' +
             (item.id === 'home' ? 'page' : 'false') + '"><span class="nav-item__icon-stack">' +
             homeAssetImage(item.asset, '', 'nav-item__icon--default') +
-            (item.selected ? homeAssetImage(item.selected, '', 'nav-item__icon--selected') : '') +
+            homeAssetImage(item.selected || item.asset, '', 'nav-item__icon--selected') +
             '</span><span class="sr-only">' + escapeHtml(item.label) + '</span></button>';
         }).join('');
       }
@@ -750,7 +804,7 @@
       function navigationState(view, extras) {
         var source = extras || {};
         return {
-          view: view || 'list',
+          view: view || 'home',
           quest: source.quest || '',
           caseId: source.caseId || '',
           itemId: source.itemId || '',
@@ -765,28 +819,49 @@
 
       function replaceCurrentListScroll() {
         if (document.getElementById('listScreen').hidden) return;
-        AppContext.scroll.homeScrollY = window.scrollY || 0;
-        var current = navigationState('list', {
-          quest: AppContext.filters.activeQuest,
-          scrollY: AppContext.scroll.homeScrollY
+        var homeVisible = !document.getElementById('homeScreen').hidden;
+        if (homeVisible) AppContext.scroll.homeScrollY = window.scrollY || 0;
+        var current = navigationState(homeVisible ? 'home' : 'list', {
+          quest: homeVisible ? '' : AppContext.filters.activeQuest,
+          scrollY: homeVisible ? AppContext.scroll.homeScrollY : window.scrollY
         });
         history.replaceState(current, '', location.href);
         persistNavigation(current);
       }
 
       function showListScreen(route) {
-        var target = route || navigationState('list');
+        var target = route || navigationState('home');
+        var homeVisible = target.view !== 'list';
         syncCurrentCaseIntoList();
         AppContext.data.currentCase = null;
         AppContext.navigation.selectedItemId = '';
-        AppContext.filters.activeQuest = target.quest || '';
-        AppContext.scroll.homeScrollY = Number(target.scrollY || 0);
+        AppContext.filters.activeQuest = homeVisible ? '' : (target.quest || '');
+        if (homeVisible) {
+          AppContext.scroll.homeScrollY = Number(
+            target.scrollY || AppContext.scroll.homeScrollY || 0
+          );
+        }
         document.getElementById('detailScreen').hidden = true;
         document.getElementById('listScreen').hidden = false;
-        selectHomeNavigation('home');
+        document.getElementById('homeScreen').hidden = !homeVisible;
+        document.getElementById('researchScreen').hidden = homeVisible;
+        document.getElementById('questFilter').hidden = homeVisible;
+        selectHomeNavigation(homeVisible ? 'home' : 'research');
         renderCaseList();
+        if (homeVisible) document.getElementById('questFilter').hidden = true;
         persistNavigation(target);
-        setTimeout(function () { window.scrollTo(0, AppContext.scroll.homeScrollY); }, 0);
+        restoreScrollPosition(homeVisible ? AppContext.scroll.homeScrollY : target.scrollY);
+      }
+
+      function restoreScrollPosition(value) {
+        var scrollY = Number(value || 0);
+        AppContext.ui.restoringScroll = true;
+        [0, 80, 240].forEach(function (delay, index) {
+          setTimeout(function () {
+            window.scrollTo(0, scrollY);
+            if (index === 2) AppContext.ui.restoringScroll = false;
+          }, delay);
+        });
       }
 
       function openCase(caseId, itemId, options) {
@@ -825,11 +900,8 @@
         }
         replaceCurrentListScroll();
         var route = navigationState('list', { quest: type, scrollY: 0 });
-        AppContext.filters.activeQuest = type;
         history.pushState(route, '', location.href);
-        persistNavigation(route);
-        renderCaseList();
-        window.scrollTo(0, 0);
+        showListScreen(route);
       }
 
       function applyNavigation(route) {
@@ -878,14 +950,19 @@
         if (!button) return;
         var destination = button.getAttribute('data-home-nav');
         if (destination === 'home') {
-          selectHomeNavigation('home');
-          window.scrollTo(0, 0);
+          replaceCurrentListScroll();
+          var homeRoute = navigationState('home', {
+            scrollY: AppContext.scroll.homeScrollY
+          });
+          history.pushState(homeRoute, '', location.href);
+          showListScreen(homeRoute);
           return;
         }
         if (destination === 'research') {
-          selectHomeNavigation('research');
-          var heading = document.getElementById('caseListHeading');
-          if (heading) heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          replaceCurrentListScroll();
+          var listRoute = navigationState('list', { scrollY: 0 });
+          history.pushState(listRoute, '', location.href);
+          showListScreen(listRoute);
           return;
         }
         showToast('この機能は準備中です。');
@@ -899,10 +976,7 @@
         replaceCurrentListScroll();
         var route = navigationState('list', { scrollY: 0 });
         history.pushState(route, '', location.href);
-        AppContext.filters.activeQuest = '';
-        persistNavigation(route);
-        renderCaseList();
-        window.scrollTo(0, 0);
+        showListScreen(route);
       });
       document.getElementById('backButton').addEventListener('click', function () {
         if (history.state && history.state.view === 'detail') history.back();
@@ -912,6 +986,13 @@
         applyNavigation(event.state || navigationState('list'));
       });
       window.addEventListener('pagehide', replaceCurrentListScroll);
+      window.addEventListener('scroll', function () {
+        if (AppContext.ui.restoringScroll ||
+            document.getElementById('listScreen').hidden ||
+            document.getElementById('homeScreen').hidden) return;
+        clearTimeout(AppContext.ui.scrollTimer);
+        AppContext.ui.scrollTimer = setTimeout(replaceCurrentListScroll, 120);
+      }, { passive: true });
       document.addEventListener('click', function (e) {
         if (e.target.closest('[data-retry]')) {
           if (!document.getElementById('detailScreen').hidden && history.state.caseId) {
@@ -1008,9 +1089,13 @@
 
       document.getElementById('settingsButton').addEventListener('click', function () {
         document.getElementById('settingsModal').hidden = false;
+        syncModalScrollLock();
       });
       document.getElementById('closeSettingsButton').addEventListener('click',
-        function () { document.getElementById('settingsModal').hidden = true; });
+        function () {
+          document.getElementById('settingsModal').hidden = true;
+          syncModalScrollLock();
+        });
       document.getElementById('changeNameButton').addEventListener('click',
         function () {
           document.getElementById('settingsModal').hidden = true;
@@ -1031,6 +1116,7 @@
           AppContext.application.catName = saved.catName;
           updateCompanion();
           document.getElementById('nameModal').hidden = true;
+          syncModalScrollLock();
           showToast('猫の名前を保存しました');
           try {
             localStorage.removeItem('supplier-nyan:cat-name:' + AppContext.application.environment);
@@ -1052,7 +1138,7 @@
         AppContext.navigation.restoredNavigation = null;
       }
       var initialNavigation = history.state || AppContext.navigation.restoredNavigation ||
-        navigationState('list');
+        navigationState('home');
       history.replaceState(initialNavigation, '', location.href);
 
       applyHomeAssets();
