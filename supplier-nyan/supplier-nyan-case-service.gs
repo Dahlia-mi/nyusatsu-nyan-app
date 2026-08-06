@@ -6,8 +6,10 @@ var SUPPLIER_NYAN_CASE_HEADER_ALIASES = Object.freeze({
   caseName: ['案件名', '件名'],
   agency: ['発注機関'],
   deadline: ['提出締切', '提出期限', '締切日'],
+  deliveryDate: ['納品期限', '納期', '納入期限'],
   status: ['状態', 'ステータス'],
-  researchTarget: ['仕入先調査対象', '調査対象']
+  researchTarget: ['仕入先調査対象', '調査対象'],
+  notes: ['メモ', '備考']
 });
 var SUPPLIER_NYAN_ITEM_HEADERS = Object.freeze([
   '案件ID',
@@ -24,15 +26,19 @@ var SUPPLIER_NYAN_ITEM_HEADERS = Object.freeze([
   '有効フラグ'
 ]);
 
-function api_listResearchCases() {
+function api_listResearchCases(questType) {
   return runSupplierNyanApi_(function () {
-    return SupplierNyanCaseService.listResearchCases();
+    return SupplierNyanPreferenceService.decorateCaseList(
+      SupplierNyanCaseService.listResearchCases(questType)
+    );
   });
 }
 
 function api_getResearchCaseDetail(caseId) {
   return runSupplierNyanApi_(function () {
-    return SupplierNyanCaseService.getCaseDetail(caseId);
+    return SupplierNyanPreferenceService.decorateCaseDetail(
+      SupplierNyanCaseService.getCaseDetail(caseId)
+    );
   });
 }
 
@@ -160,6 +166,12 @@ var SupplierNyanCaseService = (function () {
         false,
         SUPPLIER_NYAN_CASE_SHEET
       ),
+      deliveryDate: resolveHeader_(
+        map,
+        SUPPLIER_NYAN_CASE_HEADER_ALIASES.deliveryDate,
+        false,
+        SUPPLIER_NYAN_CASE_SHEET
+      ),
       status: resolveHeader_(
         map,
         SUPPLIER_NYAN_CASE_HEADER_ALIASES.status,
@@ -169,6 +181,12 @@ var SupplierNyanCaseService = (function () {
       researchTarget: resolveHeader_(
         map,
         SUPPLIER_NYAN_CASE_HEADER_ALIASES.researchTarget,
+        false,
+        SUPPLIER_NYAN_CASE_SHEET
+      ),
+      notes: resolveHeader_(
+        map,
+        SUPPLIER_NYAN_CASE_HEADER_ALIASES.notes,
         false,
         SUPPLIER_NYAN_CASE_SHEET
       )
@@ -263,38 +281,115 @@ var SupplierNyanCaseService = (function () {
         itemId: item.itemId,
         name: item.name,
         quantity: item.quantity,
-        unit: item.unit
+        unit: item.unit,
+        specification: item.specification,
+        equivalentAllowed: item.equivalentAllowed
       };
     });
     caseData.remainingItemCount = Math.max(
       0,
       safeItems.length - caseData.primaryItems.length
     );
+    caseData.allItems = safeItems.map(function (item) {
+      return {
+        itemId: item.itemId,
+        name: item.name,
+        quantity: item.quantity,
+        unit: item.unit,
+        specification: item.specification,
+        equivalentAllowed: item.equivalentAllowed
+      };
+    });
     caseData.unknownEquivalentCount = safeItems.filter(function (item) {
       return item.equivalentAllowed === null;
     }).length;
     return caseData;
   }
 
-  function listResearchCases() {
+  function readQuestState_() {
+    var spreadsheet = SupplierNyanSpreadsheet.openSupplierResearch();
+    var progressByCase = {};
+    var quoteByCase = {};
+    var progressSheet = spreadsheet.getSheetByName('仕入先にゃん進捗');
+    if (progressSheet && progressSheet.getLastRow() > 1) {
+      var progress = readTable_(progressSheet);
+      var progressCase = resolveHeader_(progress.map, ['案件ID'], true, '仕入先にゃん進捗');
+      progress.rows.forEach(function (row) {
+        var caseId = text_(row[progressCase]);
+        if (caseId) progressByCase[caseId] = true;
+      });
+    }
+    var quoteSheet = spreadsheet.getSheetByName('仕入先見積書DB');
+    if (quoteSheet && quoteSheet.getLastRow() > 1) {
+      var quotes = readTable_(quoteSheet);
+      var quoteCase = resolveHeader_(quotes.map, ['案件ID'], true, '仕入先見積書DB');
+      var aiStatus = resolveHeader_(quotes.map, ['AI読取状態'], false, '仕入先見積書DB');
+      var active = resolveHeader_(quotes.map, ['有効フラグ'], false, '仕入先見積書DB');
+      quotes.rows.forEach(function (row) {
+        if (active >= 0 && !isActive_(row[active])) return;
+        var caseId = text_(row[quoteCase]);
+        if (!caseId) return;
+        if (!quoteByCase[caseId]) quoteByCase[caseId] = { any: false, review: false };
+        quoteByCase[caseId].any = true;
+        if (aiStatus >= 0 && text_(row[aiStatus]) === '確認待ち') {
+          quoteByCase[caseId].review = true;
+        }
+      });
+    }
+    return { progressByCase: progressByCase, quoteByCase: quoteByCase };
+  }
+
+  function addQuestTypes_(caseData, questState) {
+    var quote = questState.quoteByCase[caseData.caseId] || {};
+    var types = [];
+    if (quote.any) types.push('quote_followup');
+    if (!questState.progressByCase[caseData.caseId]) types.push('supplier_search');
+    if (quote.review) types.push('document_review');
+    caseData.questTypes = types;
+    return caseData;
+  }
+
+  function listResearchCases(questType) {
     var spreadsheet = SupplierNyanSpreadsheet.openNyusatsu();
     var caseTable = readTable_(
       requireSheet_(spreadsheet, SUPPLIER_NYAN_CASE_SHEET)
     );
     var columns = caseColumns_(caseTable.map);
     var itemsByCase = readItemsByCase_(spreadsheet);
+    var questState = readQuestState_();
     var cases = caseTable.rows
       .filter(function (row) {
         return text_(row[columns.caseId]) && isTargetCase_(row, columns);
       })
       .map(function (row) {
         var caseData = mapCase_(row, columns);
-        return addItemSummary_(caseData, itemsByCase[caseData.caseId] || []);
+        return addQuestTypes_(
+          addItemSummary_(caseData, itemsByCase[caseData.caseId] || []),
+          questState
+        );
       });
+    var normalizedQuest = text_(questType);
+    if (normalizedQuest) {
+      cases = cases.filter(function (caseData) {
+        return caseData.questTypes.indexOf(normalizedQuest) >= 0;
+      });
+    }
+    var questCounts = {
+      quote_followup: 0,
+      supplier_search: 0,
+      document_review: 0
+    };
+    caseTable.rows.filter(function (row) {
+      return text_(row[columns.caseId]) && isTargetCase_(row, columns);
+    }).forEach(function (row) {
+      var summary = addQuestTypes_(mapCase_(row, columns), questState);
+      summary.questTypes.forEach(function (type) { questCounts[type]++; });
+    });
 
     return {
       cases: cases,
       total: cases.length,
+      questCounts: questCounts,
       targetRule:
         columns.researchTarget >= 0 ? 'researchTargetFlag' : 'status'
     };
@@ -336,6 +431,9 @@ var SupplierNyanCaseService = (function () {
 
     var items = readItemsByCase_(spreadsheet)[normalizedCaseId] || [];
     var caseData = mapCase_(matchedRow, columns);
+    caseData.deliveryDate = columns.deliveryDate >= 0
+      ? displayDate_(matchedRow[columns.deliveryDate]) : '';
+    caseData.notes = columns.notes >= 0 ? text_(matchedRow[columns.notes]) : '';
     caseData.items = items;
     caseData.itemCount = items.length;
     return { case: caseData };

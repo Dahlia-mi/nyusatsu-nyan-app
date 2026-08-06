@@ -178,7 +178,7 @@ test('does not expose spreadsheet IDs or internal exceptions on open failure', (
   assert.doesNotMatch(serialized, /Spreadsheet not found/);
 });
 
-test('manifest contains only the spreadsheet OAuth scope', () => {
+test('manifest preserves the TEST spreadsheet and Drive configuration', () => {
   const manifest = JSON.parse(
     fs.readFileSync(
       path.join(projectRoot, 'supplier-nyan', 'appsscript.json'),
@@ -187,7 +187,16 @@ test('manifest contains only the spreadsheet OAuth scope', () => {
   );
 
   assert.deepEqual(manifest.oauthScopes, [
-    'https://www.googleapis.com/auth/spreadsheets'
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive.file'
   ]);
   assert.equal(manifest.runtimeVersion, 'V8');
+  assert.deepEqual(manifest.webapp, {
+    executeAs: 'USER_DEPLOYING',
+    access: 'MYSELF'
+  });
+  assert.equal(
+    manifest.dependencies.enabledAdvancedServices[0].serviceId,
+    'drive'
+  );
 });

@@ -32,7 +32,9 @@ function api_getAppContext() {
       application: 'supplier-nyan',
       version: SUPPLIER_NYAN_VERSION,
       environment: config.environment,
-      preferenceStorage: 'browser'
+      deploymentVersion: config.deploymentVersion || '-',
+      preferenceStorage: 'server',
+      catName: SupplierNyanPreferenceService.getCatName()
     };
   });
 }
@@ -45,10 +47,15 @@ function doGet(event) {
   }
 
   SupplierNyanConfig.load();
-  return HtmlService.createHtmlOutputFromFile('supplier-nyan-index')
+  return HtmlService.createTemplateFromFile('supplier-nyan-index')
+    .evaluate()
     .setTitle('仕入先にゃん')
     .addMetaTag(
       'viewport',
       'width=device-width, initial-scale=1, viewport-fit=cover'
     );
+}
+
+function includeSupplierNyanFile_(fileName) {
+  return HtmlService.createHtmlOutputFromFile(fileName).getContent();
 }

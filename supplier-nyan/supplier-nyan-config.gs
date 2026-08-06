@@ -5,7 +5,8 @@ var SUPPLIER_NYAN_PROPERTY_KEYS = Object.freeze({
   NYUSATSU_SPREADSHEET_ID: 'NYUSATSU_SPREADSHEET_ID',
   SUPPLIER_RESEARCH_SPREADSHEET_ID: 'SUPPLIER_RESEARCH_SPREADSHEET_ID',
   ALLOWED_USERS: 'ALLOWED_USERS',
-  APP_USER_KEY_HASH: 'APP_USER_KEY_HASH'
+  APP_USER_KEY_HASH: 'APP_USER_KEY_HASH',
+  DEPLOYMENT_VERSION: 'DEPLOYMENT_VERSION'
 });
 
 var SUPPLIER_NYAN_ENVIRONMENTS = Object.freeze({
@@ -113,6 +114,9 @@ var SupplierNyanConfig = (function () {
       allowedUsers: Object.freeze(allowedUsers),
       hasAppUserKeyHash: Boolean(
         trim_(properties[SUPPLIER_NYAN_PROPERTY_KEYS.APP_USER_KEY_HASH])
+      ),
+      deploymentVersion: trim_(
+        properties[SUPPLIER_NYAN_PROPERTY_KEYS.DEPLOYMENT_VERSION]
       )
     });
   }
