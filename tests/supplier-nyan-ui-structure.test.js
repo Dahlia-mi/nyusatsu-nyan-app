@@ -27,7 +27,6 @@ test('index composes the unchanged screens through includeSupplierNyanFile_', ()
     'supplier-nyan-case-list',
     'supplier-nyan-case-detail',
     'supplier-nyan-dialogs',
-    'supplier-nyan-cat-assets',
     'supplier-nyan-home-assets',
     'supplier-nyan-scripts'
   ];
@@ -38,6 +37,7 @@ test('index composes the unchanged screens through includeSupplierNyanFile_', ()
     ));
   });
   assert.doesNotMatch(index, /google\.script\.run|SpreadsheetApp|Drive\.Files/);
+  assert.doesNotMatch(index, /includeSupplierNyanFile_\('supplier-nyan-cat-assets'\)/);
 });
 
 test('Version 12 fixture remains fixed while Home uses the formal component markup', () => {

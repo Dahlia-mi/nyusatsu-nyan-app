@@ -255,16 +255,16 @@
       }
 
       function installAppIcon() {
-        var assets = window.SUPPLIER_NYAN_CAT_ASSETS || {};
-        if (!assets.appIcon) return;
+        var iconSource = homeAsset('app.icon');
+        if (!iconSource) return;
         var icon = document.createElement('link');
         icon.rel = 'icon';
         icon.type = 'image/png';
-        icon.href = assets.appIcon;
+        icon.href = iconSource;
         document.head.appendChild(icon);
         var appleIcon = document.createElement('link');
         appleIcon.rel = 'apple-touch-icon';
-        appleIcon.href = assets.appIcon;
+        appleIcon.href = iconSource;
         document.head.appendChild(appleIcon);
       }
 
