@@ -1,0 +1,47 @@
+        <div class="home-main" id="homeScreen">
+          <section class="hero-section" aria-label="今日の案内">
+            <img class="hero-background"
+              data-home-asset-key="background.homeForest" alt="">
+            <img class="explorer-nyan"
+              data-home-asset-key="character.explorerCat"
+              alt="今日の仕事を案内する探検にゃん">
+            <p class="daily-instruction" id="dailyInstruction"></p>
+          </section>
+
+          <section class="home-section" aria-labelledby="questHeading">
+            <article class="wood-card quest-board">
+              <div class="home-section-heading">
+                <img class="home-section-heading__icon"
+                  data-home-asset-key="home.heading.quest" alt="">
+                <h1 id="questHeading">今日のクエスト</h1>
+                <span class="home-section-heading__summary"
+                  id="questSummary"></span>
+              </div>
+              <div id="questList" class="quest-list"></div>
+            </article>
+          </section>
+
+          <section class="home-section" aria-labelledby="recentHeading">
+            <article class="wood-card recent-board">
+              <div class="home-section-heading">
+                <img class="home-section-heading__icon"
+                  data-home-asset-key="home.heading.recent" alt="">
+                <h2 id="recentHeading">最近届いた依頼</h2>
+              </div>
+              <div class="recent-list" id="recentList"></div>
+            </article>
+          </section>
+
+          <section class="home-section" aria-labelledby="statusHeading">
+            <article class="wood-card status-board">
+              <div class="home-section-heading">
+                <img class="home-section-heading__icon"
+                  data-home-asset-key="home.heading.status" alt="">
+                <h2 id="statusHeading">調査状況</h2>
+              </div>
+              <div id="statusBoard"></div>
+            </article>
+          </section>
+        </div>
+
+        <div id="questFilter" class="quest-filter" hidden></div>

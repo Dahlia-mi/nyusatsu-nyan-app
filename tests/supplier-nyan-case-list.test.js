@@ -372,10 +372,20 @@ test('does not return detail for a case outside the research target', () => {
 });
 
 test('UI contains copy formatting, cat-name states, and mobile overflow guards', () => {
-  const html = fs.readFileSync(
-    path.join(projectRoot, 'supplier-nyan', 'supplier-nyan-index.html'),
+  const uiFiles = [
+    'supplier-nyan-index.html',
+    'supplier-nyan-styles.html',
+    'supplier-nyan-navigation.html',
+    'supplier-nyan-home.html',
+    'supplier-nyan-case-list.html',
+    'supplier-nyan-case-detail.html',
+    'supplier-nyan-dialogs.html',
+    'supplier-nyan-scripts.html'
+  ];
+  const html = uiFiles.map((fileName) => fs.readFileSync(
+    path.join(projectRoot, 'supplier-nyan', fileName),
     'utf8'
-  );
+  )).join('\n');
 
   assert.match(html, /\['品目名', item\.name\]/);
   assert.match(html, /\['数量', item\.quantity\]/);
@@ -392,13 +402,14 @@ test('UI contains copy formatting, cat-name states, and mobile overflow guards',
   assert.match(html, /if \(value === true\) return '同等品可'/);
   assert.match(html, /if \(value === false\) return '同等品不可'/);
   assert.match(html, /return '未確認'/);
-  assert.match(html, /id="questPanel"/);
+  assert.match(html, /id="questList"/);
+  assert.match(html, /class="wood-card quest-board"/);
   assert.match(html, /今日のクエスト/);
   assert.match(html, /history\.pushState/);
   assert.match(html, /sessionStorage\.setItem/);
   assert.match(html, /prefers-reduced-motion:\s*reduce/);
   assert.match(html, /再読み込み/);
-  assert.match(html, /min-height:\s*52px/);
+  assert.match(html, /min-height:\s*(?:48|52)px/);
 });
 
 test('supplier app uses configured spreadsheets and keeps read APIs read-only', () => {

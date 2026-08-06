@@ -29,6 +29,9 @@ Apps Script上の10ファイルを再現します。
 現行API、接続設定、初期化処理の契約は
 `supplier-nyan/docs/phase-a-current-contracts.md`を参照してください。
 
+Phase B-1のHTML分割、状態分類、ブラウザ側Core境界は
+`supplier-nyan/docs/phase-b1-ui-boundaries.md`を参照してください。
+
 ## TEST統合版の範囲
 
 Foundationの設定・接続方式を維持したまま、仕入先調査の入口を提供します。

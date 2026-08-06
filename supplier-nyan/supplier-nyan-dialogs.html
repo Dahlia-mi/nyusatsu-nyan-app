@@ -1,0 +1,37 @@
+  <div id="nameModal" class="modal-backdrop" hidden>
+    <form id="nameForm" class="modal">
+      <h2>相棒に名前をつけよう</h2>
+      <p>仕入先にゃんOS全体で共有する相棒名です。あとで変更できます。</p>
+      <label for="catName">猫の名前</label>
+      <input id="catName" maxlength="30" autocomplete="off" required>
+      <div class="modal-actions">
+        <button id="cancelNameButton" class="secondary-button" type="button">
+          キャンセル
+        </button>
+        <button id="saveNameButton" class="primary-button" type="submit">
+          この名前にする
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <div id="settingsModal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <h2>設定</h2>
+      <div class="settings-list">
+        <button id="changeNameButton" class="secondary-button" type="button">
+          猫の名前を変更
+        </button>
+        <div class="settings-info">
+          <strong>使い方</strong><br>
+          案件を選び、品目の条件を確認して問い合わせ状況を記録します。
+        </div>
+        <div id="environmentInfo" class="settings-info"></div>
+      </div>
+      <button id="closeSettingsButton" class="primary-button" type="button">
+        閉じる
+      </button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden role="status"></div>
