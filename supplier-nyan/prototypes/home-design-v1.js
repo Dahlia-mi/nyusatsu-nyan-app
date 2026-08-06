@@ -96,7 +96,13 @@ const mockHomeViewModel = Object.freeze({
     unit: '社',
   },
   navigation: [
-    { id: 'home', label: 'ホーム', iconAssetKey: 'nav.home.selected', active: true },
+    {
+      id: 'home',
+      label: 'ホーム',
+      iconAssetKey: 'nav.home.default',
+      selectedIconAssetKey: 'nav.home.selected',
+      active: true,
+    },
     { id: 'research', label: '調査一覧', iconAssetKey: 'nav.research.default', active: false },
     { id: 'crate', label: '宝箱', iconAssetKey: 'nav.crate.default', active: false },
     { id: 'knowledge', label: '知識の森', iconAssetKey: 'nav.knowledge.default', active: false },
@@ -162,7 +168,8 @@ function renderBadge(elementId, value) {
 
 function questRowMarkup(quest) {
   return `
-    <div class="quest-row" data-quest-id="${escapeHtml(quest.id)}">
+    <button class="quest-row" type="button" data-quest-id="${escapeHtml(quest.id)}"
+      data-quest-type="${escapeHtml(quest.type)}" aria-label="${escapeHtml(quest.title)} ${escapeHtml(quest.countLabel)}">
       <img class="quest-row__icon" src="${escapeHtml(assetPath(quest.iconAssetKey))}" alt="">
       <div class="quest-row__main">
         <span class="quest-row__title">${escapeHtml(quest.title)}</span>
@@ -172,7 +179,7 @@ function questRowMarkup(quest) {
         <span class="deadline">${escapeHtml(quest.deadlineLabel)}</span>
       </div>
       <img class="chevron" src="${escapeHtml(assetPath('home.chevron.right'))}" alt="">
-    </div>`;
+    </button>`;
 }
 
 function recentRowMarkup(request) {
@@ -196,10 +203,16 @@ function recentRowMarkup(request) {
 function navItemMarkup(item) {
   const activeAttributes = item.active ? ' aria-current="page"' : '';
   const activeClass = item.active ? ' nav-item--home' : '';
+  const iconMarkup = item.selectedIconAssetKey
+    ? `<span class="nav-item__icon-stack" aria-hidden="true">
+        <img class="nav-item__icon--default" src="${escapeHtml(assetPath(item.iconAssetKey))}" alt="">
+        <img class="nav-item__icon--selected" src="${escapeHtml(assetPath(item.selectedIconAssetKey))}" alt="">
+      </span>`
+    : `<img src="${escapeHtml(assetPath(item.iconAssetKey))}" alt="">`;
   return `
     <button class="nav-item${activeClass}" type="button" data-nav-id="${escapeHtml(item.id)}"
       aria-label="${escapeHtml(item.label)}"${activeAttributes}>
-      <img src="${escapeHtml(assetPath(item.iconAssetKey))}" alt="">
+      ${iconMarkup}
       <span class="sr-only">${escapeHtml(item.label)}</span>
     </button>`;
 }

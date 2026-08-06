@@ -7,6 +7,7 @@
   --bottom-nav-extra: 16px;
   --motion-grass-left: 8.5s;
   --motion-grass-right: 9.7s;
+  --wood-safe-inline: 36px;
   --forest-deep: #32451f;
   --forest: #5d782f;
   --forest-light: #92aa54;
@@ -240,15 +241,15 @@ img { display: block; max-width: 100%; }
   align-items: center;
   gap: 8px;
   margin: 0 0 4px;
-  padding: 0 4px 4px;
+  padding: 0 2px 4px;
   border-bottom: 1px solid rgba(129, 80, 30, .3);
   color: var(--ink);
 }
 
 .section-heading__icon {
   display: block;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   object-fit: contain;
 }
 
@@ -270,7 +271,7 @@ img { display: block; max-width: 100%; }
   position: relative;
   min-width: 0;
   overflow: hidden;
-  padding: 40px 28px 26px;
+  padding: 40px var(--wood-safe-inline) 26px;
   border: 0;
   border-radius: 0;
   background-color: transparent;
@@ -306,14 +307,17 @@ img { display: block; max-width: 100%; }
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+  color: var(--ink);
   cursor: pointer;
+  text-align: left;
+  -webkit-tap-highlight-color: rgba(129, 80, 30, .12);
 }
 
 .quest-row__icon,
 .recent-row__icon {
   display: block;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   object-fit: contain;
 }
 
@@ -324,6 +328,12 @@ img { display: block; max-width: 100%; }
 
 .quest-row:active,
 .recent-row:active { background: rgba(247, 229, 183, .42); }
+
+.quest-row {
+  transition: background-color 140ms ease, transform 140ms ease;
+}
+
+.quest-row:active { transform: scale(.992); }
 
 .quest-row__main,
 .recent-row__main { min-width: 0; }
@@ -475,6 +485,33 @@ img { display: block; max-width: 100%; }
   object-fit: contain;
 }
 
+.nav-item__icon-stack {
+  position: relative;
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+}
+
+.nav-item__icon-stack img {
+  position: absolute;
+  inset: 0;
+}
+
+.nav-item__icon--selected {
+  opacity: 0;
+  transition: opacity 320ms ease-out;
+}
+
+.nav-item[aria-current="page"] .nav-item__icon--selected {
+  opacity: 1;
+  animation: home-light-on 520ms ease-out both;
+}
+
+.nav-item[aria-current="page"] .nav-item__icon--default {
+  opacity: 0;
+}
+
 .nav-grass {
   position: absolute;
   bottom: env(safe-area-inset-bottom, 0px);
@@ -508,6 +545,34 @@ img { display: block; max-width: 100%; }
   border: 0;
 }
 
+.prototype-toast {
+  position: fixed;
+  right: 18px;
+  bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px) + 14px);
+  left: 18px;
+  z-index: 60;
+  width: min(calc(100% - 36px), 420px);
+  margin-inline: auto;
+  padding: 12px 16px;
+  border: 1px solid rgba(129, 80, 30, .35);
+  border-radius: 14px;
+  background: rgba(255, 248, 226, .97);
+  box-shadow: 0 7px 22px rgba(62, 35, 10, .24);
+  color: var(--ink);
+  font-size: .88rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.prototype-toast[hidden] { display: none; }
+
+@keyframes home-light-on {
+  0% { opacity: 0; }
+  58% { opacity: 1; }
+  78% { opacity: .82; }
+  100% { opacity: 1; }
+}
+
 @keyframes home-grass-sway-left {
   from { transform: rotate(-.22deg); }
   to { transform: rotate(.22deg); }
@@ -519,16 +584,17 @@ img { display: block; max-width: 100%; }
 }
 
 @media (max-width: 359px) {
-  :root { --bottom-nav-height: 84px; }
+  :root { --bottom-nav-height: 84px; --wood-safe-inline: 30px; }
   .app-header { padding-inline: 12px; }
   .hero-section { min-height: 370px; }
   .explorer-nyan { width: 78%; max-height: 87%; }
   .daily-instruction { left: 10px; bottom: 18px; width: 50%; padding: 13px 11px; }
   .home-section { padding-inline: 6px; }
-  .wood-card { padding-right: 28px; padding-left: 28px; }
+  .wood-card { padding-right: var(--wood-safe-inline); padding-left: var(--wood-safe-inline); }
   .section-heading { padding-inline: 2px; }
   .quest-row, .recent-row { gap: 6px; }
   .nav-item img { width: 53px; height: 53px; }
+  .nav-item__icon-stack { width: 53px; height: 53px; }
   .nav-items { height: 70px; }
 }
 
@@ -559,5 +625,9 @@ img { display: block; max-width: 100%; }
     animation-duration: .01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: .01ms !important;
+  }
+
+  .nav-item[aria-current="page"] .nav-item__icon--selected {
+    animation: none;
   }
 }

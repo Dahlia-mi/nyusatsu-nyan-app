@@ -73,12 +73,12 @@
           <button class="screen-back" type="button" data-history-back aria-label="Homeへ戻る">←</button>
           <div>
             <p class="screen-eyebrow">仕入先を探す</p>
-            <h1>調査一覧</h1>
+            <h1 id="researchScreenTitle">調査一覧</h1>
           </div>
         </header>
         <section class="screen-summary" aria-label="調査一覧の概要">
-          <strong>調査対象 3案件</strong>
-          <span>品目を選ぶと詳細を確認できます。</span>
+          <strong id="researchSummaryCount">調査対象 3案件</strong>
+          <span id="researchSummaryDescription">品目を選ぶと詳細を確認できます。</span>
         </section>
         <div class="case-list" id="caseList"></div>
       </main>
@@ -103,6 +103,7 @@
         <div class="nav-items" id="navItems"></div>
         <img class="nav-grass nav-grass--right" data-asset-key="decoration.grass.right" alt="">
       </nav>
+      <div class="prototype-toast" id="prototypeToast" role="status" aria-live="polite" hidden></div>
     </div>
   </div>
 
