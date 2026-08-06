@@ -191,6 +191,7 @@ test('returns multiple active items and excludes inactive items', () => {
         brand: 'Nyan',
         modelNumber: 'CAT-01',
         quantity: 308,
+        unit: '個',
         equivalentAllowed: true,
         displayOrder: 1
       }),
@@ -208,6 +209,8 @@ test('returns multiple active items and excludes inactive items', () => {
   assert.equal(result.success, true);
   assert.equal(result.data.case.items.length, 2);
   assert.equal(result.data.case.items[0].itemId, 'CASE-1-001');
+  assert.equal(result.data.case.items[0].quantity, 308);
+  assert.equal(result.data.case.items[0].unit, '個');
   assert.equal(result.data.case.items[0].equivalentAllowed, true);
   assert.equal(result.data.case.items[1].equivalentAllowed, false);
 });
@@ -311,6 +314,33 @@ test('returns delivery date and notes only from the detail API', () => {
   assert.equal(list.data.cases[0].notes, undefined);
   assert.equal(detail.data.case.deliveryDate, '2026/09/01');
   assert.equal(detail.data.case.notes, '取扱注意');
+});
+
+test('public read responses contain no Date objects', () => {
+  const runtime = createRuntime({
+    caseHeader: [
+      '案件ID', '案件名', '発注機関', '提出期限', '納品期限',
+      '状態', '調査対象', 'メモ'
+    ],
+    cases: [[
+      'CASE-1', '日付案件', 'A市', new Date('2026-08-10T00:00:00Z'),
+      new Date('2026-09-01T00:00:00Z'), '検討中', true, ''
+    ]],
+    items: [itemRow()]
+  });
+
+  const list = runtime.api_listResearchCases();
+  const detail = runtime.api_getResearchCaseDetail('CASE-1');
+  const containsDate = (value) => {
+    if (value instanceof Date) return true;
+    if (!value || typeof value !== 'object') return false;
+    return Object.values(value).some(containsDate);
+  };
+
+  assert.equal(containsDate(list), false);
+  assert.equal(containsDate(detail), false);
+  assert.equal(list.data.cases[0].deadline, '2026/08/10');
+  assert.equal(detail.data.case.deliveryDate, '2026/09/01');
 });
 
 test('returns common errors for missing case IDs and missing headers', () => {

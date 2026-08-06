@@ -2,6 +2,33 @@
 
 既存の「仕入先にゃんOS TEST」を正本とするApps Scriptコードです。TEST用のScript PropertiesとSpreadsheet接続を利用します。
 
+## TEST正本の再現
+
+Phase Aの固定基準はApps Script TEST Version 12です。Gitでは次の対応で
+Apps Script上の10ファイルを再現します。
+
+| Apps Script上のファイル | Git上のファイル |
+|---|---|
+| `appsscript.json` | `supplier-nyan/appsscript.json` |
+| `コード.gs` | `supplier-nyan/supplier-nyan-response.gs` |
+| `supplier-nyan-config.gs` | 同名 |
+| `supplier-nyan-spreadsheet.gs` | 同名 |
+| `supplier-nyan-case-service.gs` | 同名 |
+| `supplier-nyan-app.gs` | 同名 |
+| `supplier-nyan-index.html` | 同名 |
+| `supplier-nyan-preference-service.gs` | 同名 |
+| `supplier-nyan-cat-assets.html` | 同名 |
+| `supplier-nyan-quote-service.gs` | 同名 |
+
+正本との一致は`tests/supplier-nyan-test-source-contract.test.js`に保存した
+正規化SHA-256で検証します。改行コードだけは比較前にLFへ正規化します。
+分割前のVersion 12 UI原本は
+`tests/fixtures/supplier-nyan-test-v12/supplier-nyan-index.html`へ固定し、
+現在の`index.html`は同じ画面をincludeで構成します。
+
+現行API、接続設定、初期化処理の契約は
+`supplier-nyan/docs/phase-a-current-contracts.md`を参照してください。
+
 ## TEST統合版の範囲
 
 Foundationの設定・接続方式を維持したまま、仕入先調査の入口を提供します。
@@ -84,10 +111,12 @@ Phase1では、安全な利用者IDがまだ確定していないため、猫の
 
 失敗時は内部例外やスプレッドシートIDをレスポンスへ出しません。
 
-## デプロイ前確認
+## TEST環境の取扱い
 
-1. 既存の入札にゃんOSとは別のApps Scriptプロジェクトを作成する
-2. テスト用スプレッドシート2つを用意する
-3. Script Propertiesへテスト環境の値を設定する
-4. 匿名アクセスを許可せず、新しいテスト用URLとしてデプロイする
-5. ヘルスチェックが`success: true`を返すことを確認する
+既存の「仕入先にゃんOS TEST」と既存Deploymentを使用します。新しい
+Apps Scriptプロジェクト、Deployment、Spreadsheetは作成しません。
+Phase AではApps Scriptへの保存やDeployment更新も行いません。
+
+将来TESTへ反映する場合も、接続値をGitへ書かず、既存Script Properties、
+アクセス範囲`MYSELF`、Drive Advanced Serviceを維持したうえで、
+`api_healthCheck()`が`success: true`を返すことを確認します。

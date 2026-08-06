@@ -315,6 +315,7 @@ function setupSupplierNyanQuoteSheetTest() {
     folderName: folder.name
   };
 }
+
 function api_uploadQuoteFile(
   caseId,
   itemId,
