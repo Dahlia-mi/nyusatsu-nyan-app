@@ -187,11 +187,33 @@ function resolveStandardEstimatePdfFolder_(caseId) {
       if (projectId) try { projectFolder = DriveApp.getFolderById(projectId); } catch (ignore) {}
     }
   }
+  if (!projectFolder) projectFolder = findStandardEstimateProjectFolderByCaseId_(caseId);
   if (projectFolder) {
     const folders = projectFolder.getFoldersByName('04_見積');
     return { folder: folders.hasNext() ? folders.next() : projectFolder.createFolder('04_見積'), usedFallbackFolder: false };
   }
   return { folder: getOrCreateFolder_(STANDARD_ESTIMATE_PDF_FALLBACK_FOLDER), usedFallbackFolder: true };
+}
+
+function findStandardEstimateProjectFolderByCaseId_(caseId) {
+  const target = String(caseId == null ? '' : caseId).trim();
+  if (!target) return null;
+
+  const rootId = String(PropertiesService.getScriptProperties().getProperty('NYAN_PROJECT_ROOT_FOLDER_ID') || '').trim();
+  if (!rootId) return null;
+
+  let root;
+  try {
+    root = DriveApp.getFolderById(rootId);
+  } catch (ignore) {
+    return null;
+  }
+
+  const folders = root.getFoldersByName(target);
+  if (!folders.hasNext()) return null;
+  const projectFolder = folders.next();
+  if (folders.hasNext()) throw new Error('案件IDと同名の案件フォルダが複数あります: ' + target);
+  return projectFolder;
 }
 
 function standardEstimatePdfDriveId_(value) {
