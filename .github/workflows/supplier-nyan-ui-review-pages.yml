@@ -1,4 +1,4 @@
-name: Supplier Nyan UI Review Pages
+name: Supplier Nyan UI Review Artifact
 
 on:
   push:
@@ -10,43 +10,24 @@ on:
       - .github/workflows/supplier-nyan-ui-review-pages.yml
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 concurrency:
-  group: supplier-nyan-ui-review-pages
+  group: supplier-nyan-ui-review-artifact
   cancel-in-progress: true
 
 jobs:
   package-review:
-    if: github.ref == 'refs/heads/feature/supplier-nyan-v0.3.0-case-list'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - name: Checkout review branch
         uses: actions/checkout@v4
 
-      - name: Upload supplier-nyan Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Upload supplier-nyan review artifact
+        uses: actions/upload-artifact@v4
         with:
+          name: supplier-nyan-ui-review-${{ github.sha }}
           path: supplier-nyan
-
-  deploy:
-    if: github.ref == 'refs/heads/feature/supplier-nyan-v0.3.0-case-list'
-    needs: package-review
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-        with:
-          enablement: true
-
-      - name: Deploy review site
-        id: deployment
-        uses: actions/deploy-pages@v4
+          if-no-files-found: error
+          retention-days: 14
