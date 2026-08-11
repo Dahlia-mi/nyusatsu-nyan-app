@@ -1,0 +1,92 @@
+name: Production GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - index.html
+      - .github/workflows/pages-production.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout production branch
+        uses: actions/checkout@v4
+
+      - name: Checkout approved supplier-nyan release
+        uses: actions/checkout@v4
+        with:
+          repository: Dahlia-mi/nyusatsu-nyan-app
+          ref: e76a162735688e0ca779114725d82ac98d5b87a9
+          path: .supplier-nyan-release
+
+      - name: Assemble production site
+        shell: bash
+        run: |
+          set -euo pipefail
+          site_dir="${RUNNER_TEMP}/pages-site"
+          supplier_src=".supplier-nyan-release/supplier-nyan"
+
+          mkdir -p "${site_dir}/supplier-nyan"
+          cp index.html "${site_dir}/index.html"
+
+          # Preserve the currently published supplier review URLs.
+          cp -R "${supplier_src}/prototypes" "${site_dir}/prototypes"
+          cp -R "${supplier_src}/assets" "${site_dir}/assets"
+          cp "${supplier_src}/supplier-nyan-index.html" "${site_dir}/supplier-nyan-index.html"
+
+          # Provide the canonical future supplier-nyan path without changing its UI files.
+          cp -R "${supplier_src}/prototypes" "${site_dir}/supplier-nyan/prototypes"
+          cp -R "${supplier_src}/assets" "${site_dir}/supplier-nyan/assets"
+          printf '%s\n' \
+            '<!doctype html>' \
+            '<html lang="ja">' \
+            '<head>' \
+            '  <meta charset="utf-8">' \
+            '  <meta name="viewport" content="width=device-width, initial-scale=1">' \
+            '  <meta http-equiv="refresh" content="0; url=./prototypes/home-design-v1.html">' \
+            '  <title>仕入先にゃん</title>' \
+            '</head>' \
+            '<body><a href="./prototypes/home-design-v1.html">仕入先にゃんを開く</a></body>' \
+            '</html>' \
+            > "${site_dir}/supplier-nyan/index.html"
+
+          touch "${site_dir}/.nojekyll"
+
+          test -f "${site_dir}/index.html"
+          test -f "${site_dir}/prototypes/home-design-v1.html"
+          test -d "${site_dir}/assets"
+          test -f "${site_dir}/supplier-nyan/index.html"
+          test -f "${site_dir}/supplier-nyan/prototypes/home-design-v1.html"
+          test -d "${site_dir}/supplier-nyan/assets"
+
+      - name: Upload production Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/pages-site
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy production site
+        id: deployment
+        uses: actions/deploy-pages@v4
